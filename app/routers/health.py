@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from app.services.mongo import mongo
+from app.config import settings  # ← this line was missing
 
 router = APIRouter(prefix="/health", tags=["health"])
 

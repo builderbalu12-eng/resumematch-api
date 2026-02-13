@@ -2,8 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import health
-from app.services.mongo import mongo  # ← this line is missing in your current code
+from app.routers import health, auth_routes, user_routes
+from app.services.mongo import mongo
 
 app = FastAPI(
     title="ResumeMatch Pro API",
@@ -26,18 +26,25 @@ app.add_middleware(
         "http://localhost:5173",
         "http://localhost:3000",
         "http://localhost:4200",
-        "*"  # remove this in production
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
+# Routers
 app.include_router(health.router)
 
+# Main auth routes (register, login, google/url) — keep /api prefix
+app.include_router(auth_routes.router, prefix="/api")
 
-# MongoDB connection lifecycle
+# Google callback — NO prefix (so path is /auth/google/callback)
+app.include_router(auth_routes.google_callback_router)
+
+app.include_router(user_routes.router, prefix="/api")
+
+
 @app.on_event("startup")
 async def startup_event():
     await mongo.connect()

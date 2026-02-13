@@ -1,3 +1,4 @@
+# app/config.py - full file
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,7 +11,13 @@ class Settings(BaseSettings):
 
     jwt_secret: str
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 1440
+    access_token_expire_minutes: int = 10080
+
+    google_client_id: str
+    google_client_secret: str
+    google_redirect_uri: str
+
+    frontend_uri: str = "http://localhost:5173"
 
     model_config = SettingsConfigDict(
         env_file=".env",
