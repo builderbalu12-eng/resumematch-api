@@ -19,6 +19,15 @@ class Settings(BaseSettings):
 
     frontend_uri: str = "http://localhost:5173"
 
+    resume_template_admins: str = ""  # comma-separated list
+
+    @property
+    def resume_admin_emails(self) -> set[str]:
+        """Returns set of admin emails (normalized)"""
+        if not self.resume_template_admins:
+            return set()
+        return {email.strip().lower() for email in self.resume_template_admins.split(",") if email.strip()}
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -28,3 +37,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+

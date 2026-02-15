@@ -36,4 +36,17 @@ class MongoService:
         return self.db.applications
 
 
+    @property
+    def resume_templates(self):
+        return self.db.resume_templates
+
+    @property
+    def resume_content_schemas(self):
+        return self.db.resume_content_schemas
+
+    @property
+    def user_resumes(self):
+        return self.db.user_resumes
+
+
 mongo = MongoService()
