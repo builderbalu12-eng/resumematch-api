@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.routers import health, auth_routes, user_routes
 from app.routers import resume_routes
+from app.routers import payment_routes
 from app.services.mongo import mongo
 
 app = FastAPI(
@@ -42,6 +43,7 @@ app.include_router(auth_routes.router, prefix="/api")
 app.include_router(auth_routes.google_callback_router)
 app.include_router(user_routes.router, prefix="/api")
 app.include_router(resume_routes.router, prefix="/api")
+app.include_router(payment_routes.router, prefix="/api")
 
 
 @app.on_event("startup")

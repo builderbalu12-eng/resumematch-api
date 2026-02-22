@@ -48,5 +48,25 @@ class MongoService:
     def user_resumes(self):
         return self.db.user_resumes
 
+    @property
+    def plans(self):
+        return self.db.plans
+
+    @property
+    def subscriptions(self):
+        return self.db.subscriptions
+
+    @property
+    def coupons(self):
+        return self.db.coupons
+
+    @property
+    def payment_logs(self):
+        return self.db.payment_logs
+
+    @property
+    def invoices(self):
+        return self.db.invoices
+
 
 mongo = MongoService()

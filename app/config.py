@@ -1,6 +1,6 @@
 # app/config.py - full file
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
+from typing import Any, Dict, Optional, List  # ← ADD THIS LINE
 
 class Settings(BaseSettings):
     environment: str = "development"
@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     frontend_uri: str = "http://localhost:5173"
 
     resume_template_admins: str = ""  # comma-separated list
+
+    razorpay_key_id: str
+    razorpay_key_secret: str
+    razorpay_webhook_secret: Optional[str] = None
 
     @property
     def resume_admin_emails(self) -> set[str]:
