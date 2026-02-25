@@ -68,5 +68,9 @@ class MongoService:
     def invoices(self):
         return self.db.invoices
 
+    @property
+    def openclaw_sessions(self):
+        return self.db.openclaw_sessions
+
 
 mongo = MongoService()

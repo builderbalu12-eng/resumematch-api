@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
-
+from app.services.mongo import mongo
 
 class PaymentLogCreate(BaseModel):
     user_id: str

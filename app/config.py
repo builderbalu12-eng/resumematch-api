@@ -1,6 +1,7 @@
 # app/config.py - full file
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Any, Dict, Optional, List  # ← ADD THIS LINE
+from pathlib import Path
 
 class Settings(BaseSettings):
     environment: str = "development"
@@ -25,6 +26,15 @@ class Settings(BaseSettings):
     razorpay_key_secret: str
     razorpay_webhook_secret: Optional[str] = None
 
+    gemini_api_key: str   # ← ADD THIS LINE
+
+    base_openclaw_port: int = 19000                  # users get 19000, 19001, ...
+    openclaw_data_dir: str = str(Path.home() / "openclaw_data")
+    # openclaw_data_dir: str = "/var/lib/openclaw"     # persistent folder
+    openclaw_max_users: int = 100                    # safety limit
+
+    openclaw_gateway_token: str ="supersecret123" # ← Add this line
+
     @property
     def resume_admin_emails(self) -> set[str]:
         """Returns set of admin emails (normalized)"""
@@ -39,6 +49,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @property
+    def openclaw_base_url(self) -> str:
+        return f"http://localhost"  # or domain if you expose gateways
 
 settings = Settings()
 

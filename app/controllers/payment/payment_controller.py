@@ -1,6 +1,7 @@
 from fastapi import HTTPException
 from app.config import settings  # FIXED: missing import
 from app.services.payment.razorpay_service import razorpay_service
+from app.services.mongo import mongo
 from app.services.credits_service import CreditsService
 from app.services.mongo import mongo
 from app.models.payment import PaymentOrderCreate, PaymentVerify

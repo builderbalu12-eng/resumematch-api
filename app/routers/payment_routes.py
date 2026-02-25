@@ -11,6 +11,7 @@ from app.models.payment.coupon import CouponCreate, CouponUpdate, CouponOut
 from app.models.payment.payment_log import PaymentLogOut
 from app.models.payment import PaymentOrderCreate, PaymentVerify
 from typing import Any, Dict, Optional, List  # ← ADD THIS LINE
+from app.services.mongo import mongo
 
 
 router = APIRouter(prefix="/payments", tags=["payments"])

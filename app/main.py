@@ -5,7 +5,9 @@ from app.config import settings
 from app.routers import health, auth_routes, user_routes
 from app.routers import resume_routes
 from app.routers import payment_routes
+from app.routers import openclaw_routes
 from app.services.mongo import mongo
+
 
 app = FastAPI(
     title="ResumeMatch Pro API",
@@ -44,13 +46,18 @@ app.include_router(auth_routes.google_callback_router)
 app.include_router(user_routes.router, prefix="/api")
 app.include_router(resume_routes.router, prefix="/api")
 app.include_router(payment_routes.router, prefix="/api")
+app.include_router(openclaw_routes.router, prefix="/api")
 
 
 @app.on_event("startup")
 async def startup_event():
     await mongo.connect()
 
-
+    # Restart previously connected user gateways
+    async for sess in mongo.openclaw_sessions.find({"status": "connected"}):
+        OpenClawBridge.start_gateway(sess["profile"], sess["port"])
+        print(f"Restarted OpenClaw gateway → {sess['profile']} :{sess['port']}")
+        
 @app.on_event("shutdown")
 async def shutdown_event():
     await mongo.close()
