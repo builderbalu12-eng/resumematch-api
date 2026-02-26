@@ -12,6 +12,7 @@ from app.models.payment.payment_log import PaymentLogOut
 from app.models.payment import PaymentOrderCreate, PaymentVerify
 from typing import Any, Dict, Optional, List  # ← ADD THIS LINE
 from app.services.mongo import mongo
+from app.services.payment.webhook_service import WebhookService
 
 
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -203,16 +204,10 @@ async def list_payment_logs(
 # ────────────────────────────────────────────────
 # Webhook (Razorpay calls this automatically)
 # ────────────────────────────────────────────────
-
-@router.post("/webhook", response_model=Dict)
+@router.post("/webhook", response_model=dict)
 async def razorpay_webhook(request: Request):
     payload = await request.body()
-    sig_header = request.headers.get("X-Razorpay-Signature")
+    signature = request.headers.get("X-Razorpay-Signature")
 
-    if not sig_header:
-        raise HTTPException(400, "Missing signature header")
-
-    if not razorpay_service.verify_webhook(payload, sig_header):
-        raise HTTPException(400, "Invalid webhook signature")
-
-    return {"status": "received"}
+    result = await WebhookService.handle_razorpay_webhook(payload, signature)
+    return result

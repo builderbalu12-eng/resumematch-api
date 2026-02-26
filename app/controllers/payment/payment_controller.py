@@ -25,12 +25,13 @@ class PaymentController:
             amount=data.amount,
             currency=data.currency,
             credits=data.credits_to_add,
-            receipt=data.receipt
+            receipt=data.receipt,
+            user_id=current_user               # ← NEW / IMPORTANT
         )
 
         return {
             "status": 200,
-            "success": True,  # FIXED: True, not true
+            "success": True,
             "message": "Payment order created",
             "data": {
                 "key": settings.razorpay_key_id,

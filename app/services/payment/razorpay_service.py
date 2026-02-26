@@ -69,14 +69,24 @@ class RazorpayService:
         except Exception as e:
             raise HTTPException(500, str(e))
 
-    def create_order(self, amount: float, currency: str, credits: float, receipt: str = None) -> dict:
+    def create_order(
+        self,
+        amount: float,
+        currency: str,
+        credits: float,
+        receipt: str = None,
+        user_id: str = None           # ← NEW
+    ) -> dict:
         amount_minor = int(amount * 100)
         data = {
             "amount": amount_minor,
             "currency": currency.upper(),
             "receipt": receipt or f"receipt_{int(datetime.utcnow().timestamp())}",
             "payment_capture": 1,
-            "notes": {"credits": str(credits)}
+            "notes": {
+                "credits": str(credits),
+                "user_id": user_id or "unknown"    # ← NEW
+            }
         }
 
         try:

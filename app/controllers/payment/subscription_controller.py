@@ -5,22 +5,36 @@ from app.models.payment.subscription import SubscriptionCreate, SubscriptionUpda
 from bson import ObjectId
 from datetime import datetime
 from typing import Dict, List, Optional
+from app.config import settings  # ← make sure this is imported
 
 
 class SubscriptionController:
+
 
     @staticmethod
     async def create_subscription(data: SubscriptionCreate, current_user: str = None) -> Dict:
         sub_data = {
             "plan_id": data.plan_id,
-            "total_count": 12,  # ← change to 12 (or any number >=1), or make it dynamic
-            "customer_notify": 1
+            "total_count": 12,
+            "customer_notify": 1,
+            # Do NOT put callback_url here yet
         }
+
         razorpay_sub = razorpay_service.create_subscription(sub_data)
+
+        # Now razorpay_sub exists → safe to use
+        # callback_url = f"{settings.payment_success_url}?sub_id={razorpay_sub['id']}&user_id={current_user}"
+        callback_url = settings.payment_success_url,
+
+        # Optional: If you want to update the subscription with callback_url after creation
+        # (Razorpay allows updating some fields post-creation in some cases, but usually better to set at create time)
+
+        # But simplest: just include it in the response for frontend to handle if needed
+        # (most common pattern: frontend gets short_url and redirects itself)
 
         doc = {
             "_id": ObjectId(),
-            "user_id": current_user,  # ← use current_user here (real user ID)
+            "user_id": current_user,
             "plan_id": data.plan_id,
             "razorpay_subscription_id": razorpay_sub["id"],
             "status": razorpay_sub["status"],
@@ -33,9 +47,9 @@ class SubscriptionController:
         return {
             "subscription_id": razorpay_sub["id"],
             "short_url": razorpay_sub.get("short_url"),
-            "auth_link": razorpay_sub.get("auth_link")
+            "auth_link": razorpay_sub.get("auth_link"),
+            "callback_url": callback_url   # ← optional: return it so frontend knows where user will land
         }
-
     @staticmethod
     async def get_subscription(subscription_id: str, current_user: str = None) -> Dict:
         doc = await mongo.subscriptions.find_one({"_id": ObjectId(subscription_id)})
