@@ -1,40 +1,89 @@
 from fastapi import APIRouter, Depends, HTTPException
-from app.models.user import UserResponse, UserUpdate
+from typing import Any
+
+from app.models.user import UserResponse, UserUpdate, ChangePasswordRequest
+from app.controllers.user_controller import (
+    UserController,
+    UserResponseModel,
+    CreditsResponseModel,
+)
 from app.middleware.auth import get_current_user
-from app.services.mongo import mongo
-from bson import ObjectId  # ← import this
 
-router = APIRouter(prefix="/user", tags=["user"])
+router = APIRouter(prefix="/user", tags=["User"])
 
-@router.get("/me", response_model=UserResponse)
-async def get_me(user_id: str = Depends(get_current_user)):
-    # Convert string to ObjectId for query
-    try:
-        object_id = ObjectId(user_id)
-    except:
-        raise HTTPException(400, "Invalid user ID format")
 
-    user = await mongo.users.find_one({"_id": object_id})
-    print("Token user_id (string):", user_id)
-    print("Found user:", user)
+def _extract_user_id(current_user: Any) -> str:
+    if isinstance(current_user, str):
+        return current_user
+    elif isinstance(current_user, dict):
+        return str(
+            current_user.get("_id")
+            or current_user.get("id")
+            or current_user.get("user_id")
+            or ""
+        )
+    return str(current_user)
 
-    if not user:
-        raise HTTPException(404, "User not found")
 
-    # Prepare response dict (keep _id as string for Pydantic alias)
-    response_dict = {
-        "_id": str(user["_id"]),  # keep _id key with string value
-        "firstName": user["firstName"],
-        "lastName": user["lastName"],
-        "email": user["email"],
-        "credits": user["credits"],
-        "created_at": user["created_at"],
-        "auth_provider": user["auth_provider"],
-        "google_id": user.get("google_id")
-    }
+# ─────────────────────────────────────────────────────
+# GET /api/user/me
+# ─────────────────────────────────────────────────────
+@router.get(
+    "/me",
+    response_model=UserResponseModel,
+    summary="Get current user profile",
+)
+async def get_me(
+    current_user: Any = Depends(get_current_user),
+):
+    user_id = _extract_user_id(current_user)
+    return await UserController.get_user(user_id, user_id)
 
-    # Do NOT delete _id — Pydantic needs it for alias
-    # del user["password"]  # safe to remove password
-    response_dict.pop("password", None)  # remove password if exists
 
-    return UserResponse(**response_dict)
+# ─────────────────────────────────────────────────────
+# PATCH /api/user/me
+# Update firstName and/or lastName only
+# Email is permanently blocked from update
+# ─────────────────────────────────────────────────────
+@router.patch(
+    "/me",
+    response_model=UserResponseModel,
+    summary="Update profile — firstName and lastName only. Email cannot be changed.",
+)
+async def update_me(
+    user_data:    UserUpdate,
+    current_user: Any = Depends(get_current_user),
+):
+    user_id = _extract_user_id(current_user)
+    return await UserController.update_user(user_id, user_id, user_data)
+
+
+# ─────────────────────────────────────────────────────
+# POST /api/user/me/change-password
+# Only works for local auth users (not Google)
+# ─────────────────────────────────────────────────────
+@router.post(
+    "/me/change-password",
+    summary="Change password — local auth users only",
+)
+async def change_password(
+    payload:      ChangePasswordRequest,
+    current_user: Any = Depends(get_current_user),
+):
+    user_id = _extract_user_id(current_user)
+    return await UserController.change_password(user_id, user_id, payload)
+
+
+# ─────────────────────────────────────────────────────
+# GET /api/user/me/credits
+# ─────────────────────────────────────────────────────
+@router.get(
+    "/me/credits",
+    response_model=CreditsResponseModel,
+    summary="Get current user credits balance",
+)
+async def get_credits(
+    current_user: Any = Depends(get_current_user),
+):
+    user_id = _extract_user_id(current_user)
+    return await UserController.get_user_credits(user_id, user_id)

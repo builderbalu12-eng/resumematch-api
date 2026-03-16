@@ -5,24 +5,34 @@ from datetime import datetime
 
 class SubscriptionCreate(BaseModel):
     plan_id: str
-    user_id: str
+    billing_cycle: str = Field("monthly", pattern="^(monthly|yearly)$")
+    is_recurring: bool = True
+    coupon_code: Optional[str] = None          # single field, backend auto-detects type
 
 
 class SubscriptionUpdate(BaseModel):
-    status: Optional[str] = None  # active, cancelled, paused
-    pause_until: Optional[datetime] = None
+    status: Optional[str] = None               # active | cancelled | paused | past_due
+    renewal_date: Optional[datetime] = None
+    cancelled_at: Optional[datetime] = None
 
 
 class SubscriptionOut(BaseModel):
-    id: str = Field(..., alias="_id")
+    id: Optional[str] = Field(None, alias="_id")
     user_id: str
     plan_id: str
-    razorpay_subscription_id: str
+    plan_name: Optional[str] = None            # denormalized for quick display
+    amount_paid: Optional[float] = None        # after coupon discount
+    currency: Optional[str] = "INR"
+    billing_cycle: str
+    is_recurring: bool
+    razorpay_subscription_id: Optional[str] = None   # None for Free plan
+    stripe_subscription_id: Optional[str] = None     # future Stripe support
     status: str = "created"
-    current_period_start: Optional[datetime] = None
-    current_period_end: Optional[datetime] = None
-    cancel_at: Optional[datetime] = None
-    created_at: datetime
+    start_date: Optional[datetime] = None
+    renewal_date: Optional[datetime] = None
+    cancelled_at: Optional[datetime] = None
+    coupon_id: Optional[str] = None            # applied coupon reference
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
     class Config:

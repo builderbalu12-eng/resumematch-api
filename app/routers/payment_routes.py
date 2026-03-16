@@ -1,24 +1,26 @@
-from fastapi import APIRouter, Depends, Request, HTTPException, Query
-from typing import Optional
+from fastapi import APIRouter, Depends, Request, HTTPException, Query, Body
+from typing import Dict, Optional
 from app.middleware.auth import get_current_user
 from app.controllers.payment.plan_controller import PlanController
 from app.controllers.payment.subscription_controller import SubscriptionController
 from app.controllers.payment.coupon_controller import CouponController
 from app.controllers.payment.payment_controller import PaymentController
-from app.models.payment.plan import PlanCreate, PlanUpdate, PlanOut
-from app.models.payment.subscription import SubscriptionCreate, SubscriptionUpdate, SubscriptionOut
-from app.models.payment.coupon import CouponCreate, CouponUpdate, CouponOut
-from app.models.payment.payment_log import PaymentLogOut
+from app.models.payment.plan import PlanCreate, PlanUpdate
+from app.models.payment.subscription import SubscriptionCreate, SubscriptionUpdate
+from app.models.payment.coupon import CouponCreate, CouponUpdate
+from app.models.payment.billing_history import BillingHistoryOut
 from app.models.payment import PaymentOrderCreate, PaymentVerify
-from typing import Any, Dict, Optional, List  # ← ADD THIS LINE
 from app.services.mongo import mongo
 from app.services.payment.webhook_service import WebhookService
+from bson import ObjectId
+from datetime import datetime
 
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
+
 # ────────────────────────────────────────────────
-# Plans (Subscription Plans CRUD)
+# Plans
 # ────────────────────────────────────────────────
 
 @router.post("/subscription-plans", response_model=Dict)
@@ -29,14 +31,14 @@ async def create_plan(
     return await PlanController.create_plan(data, current_user)
 
 
+# AFTER — make it public
 @router.get("/subscription-plans", response_model=Dict)
 async def list_plans(
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     active_only: bool = Query(True),
-    current_user: str = Depends(get_current_user)
 ):
-    return await PlanController.list_plans(skip, limit, active_only, current_user)
+    return await PlanController.list_plans(skip, limit, active_only, current_user=None)
 
 
 @router.get("/subscription-plans/{plan_id}", response_model=Dict)
@@ -65,7 +67,7 @@ async def delete_plan(
 
 
 # ────────────────────────────────────────────────
-# Subscriptions (User Subscriptions CRUD)
+# Subscriptions
 # ────────────────────────────────────────────────
 
 @router.post("/subscriptions", response_model=Dict)
@@ -83,6 +85,7 @@ async def list_subscriptions(
     current_user: str = Depends(get_current_user)
 ):
     return await SubscriptionController.list_subscriptions(skip, limit, current_user)
+
 
 @router.get("/subscriptions/{subscription_id}", response_model=Dict)
 async def get_subscription(
@@ -177,37 +180,110 @@ async def delete_coupon(
 
 
 # ────────────────────────────────────────────────
-# Payment Logs (History)
+# Coupon Validate
 # ────────────────────────────────────────────────
 
-@router.get("/logs", response_model=Dict)
-async def list_payment_logs(
+@router.post("/coupons/validate", response_model=Dict)
+async def validate_coupon(
+    code: str = Body(..., embed=True),
+    plan_id: str = Body(..., embed=True),
+    current_user: str = Depends(get_current_user)
+):
+    user = await mongo.users.find_one({"_id": ObjectId(current_user)})
+    user_email = user.get("email", "") if user else ""
+    user_domain = user_email.split("@")[-1] if "@" in user_email else ""
+
+    coupon = await mongo.coupons.find_one({"code": code.upper(), "is_active": True})
+    if not coupon:
+        raise HTTPException(400, "Invalid coupon code")
+
+    if coupon.get("expires_at") and coupon["expires_at"] < datetime.utcnow():
+        raise HTTPException(400, "Coupon has expired")
+
+    if coupon.get("max_uses") and coupon.get("uses_count", 0) >= coupon["max_uses"]:
+        raise HTTPException(400, "Coupon usage limit reached")
+
+    if coupon.get("applicable_to_plans") and plan_id not in coupon["applicable_to_plans"]:
+        raise HTTPException(400, "Coupon is not valid for this plan")
+
+    coupon_type = coupon.get("coupon_type", "individual")
+
+    if coupon_type == "individual":
+        if coupon.get("applicable_to_user_id") != current_user:
+            raise HTTPException(400, "This coupon is not valid for your account")
+    elif coupon_type == "domain":
+        if user_domain not in (coupon.get("applicable_to_domains") or []):
+            raise HTTPException(400, "This coupon is not valid for your email domain")
+
+    plan = await mongo.plans.find_one({"_id": ObjectId(plan_id)})
+    if not plan:
+        raise HTTPException(404, "Plan not found")
+
+    original_amount = plan["amount"]
+    discount = 0
+
+    if coupon.get("discount_percent"):
+        discount = original_amount * (coupon["discount_percent"] / 100)
+    elif coupon.get("discount_amount"):
+        discount = coupon["discount_amount"]
+
+    discounted_amount = max(original_amount - discount, 0)
+
+    return {
+        "status": 200,
+        "success": True,
+        "message": "Coupon applied successfully",
+        "data": {
+            "code": code.upper(),
+            "coupon_type": coupon_type,
+            "original_amount": original_amount,
+            "discount": round(discount, 2),
+            "discounted_amount": round(discounted_amount, 2),
+            "currency": plan.get("currency", "INR")
+        }
+    }
+
+
+# ────────────────────────────────────────────────
+# Billing History
+# ────────────────────────────────────────────────
+
+@router.get("/billing-history", response_model=Dict)
+async def get_billing_history(
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     current_user: str = Depends(get_current_user)
 ):
     query = {"user_id": current_user}
-    cursor = mongo.payment_logs.find(query).skip(skip).limit(limit).sort("created_at", -1)
-    logs = await cursor.to_list(length=limit)
-    total = await mongo.payment_logs.count_documents(query)
+    cursor = mongo.billing_history.find(query).skip(skip).limit(limit).sort("payment_date", -1)
+    history = await cursor.to_list(length=limit)
+    total = await mongo.billing_history.count_documents(query)
 
-    result = [PaymentLogOut(**log).model_dump(by_alias=True) for log in logs]
+    result = []
+    for h in history:
+        h_safe = h.copy()
+        h_safe["_id"] = str(h_safe["_id"])
+        result.append(BillingHistoryOut(**h_safe).model_dump(by_alias=True))
 
     return {
-        "items": result,
-        "total": total,
-        "skip": skip,
-        "limit": limit
+        "status": 200,
+        "success": True,
+        "message": f"Found {len(result)} billing records",
+        "data": {
+            "items": result,
+            "total": total,
+            "skip": skip,
+            "limit": limit
+        }
     }
 
 
 # ────────────────────────────────────────────────
-# Webhook (Razorpay calls this automatically)
+# Webhook
 # ────────────────────────────────────────────────
+
 @router.post("/webhook", response_model=dict)
 async def razorpay_webhook(request: Request):
     payload = await request.body()
     signature = request.headers.get("X-Razorpay-Signature")
-
-    result = await WebhookService.handle_razorpay_webhook(payload, signature)
-    return result
+    return await WebhookService.handle_razorpay_webhook(payload, signature)

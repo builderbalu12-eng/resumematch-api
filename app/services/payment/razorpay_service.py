@@ -2,6 +2,7 @@ import razorpay
 from fastapi import HTTPException
 from app.config import settings
 from datetime import datetime
+from typing import Optional
 
 
 class RazorpayService:
@@ -58,6 +59,10 @@ class RazorpayService:
 
     def verify_webhook(self, payload, signature):
         try:
+            # ✅ FIX: decode bytes to string before verification
+            if isinstance(payload, bytes):
+                payload = payload.decode("utf-8")
+
             self.client.utility.verify_webhook_signature(
                 payload,
                 signature,
@@ -65,33 +70,35 @@ class RazorpayService:
             )
             return True
         except razorpay.errors.SignatureVerificationError:
+            print(f"❌ Webhook signature verification failed")
             return False
         except Exception as e:
+            print(f"🔴 verify_webhook error: {e}")
             raise HTTPException(500, str(e))
 
     def create_order(
         self,
         amount: float,
         currency: str,
-        credits: float,
-        receipt: str = None,
-        user_id: str = None           # ← NEW
+        receipt: Optional[str] = None,
+        user_id: Optional[str] = None,
+        plan_id: Optional[str] = None,
+        billing_cycle: Optional[str] = "monthly"
     ) -> dict:
-        amount_minor = int(amount * 100)
         data = {
-            "amount": amount_minor,
+            "amount": int(amount * 100),
             "currency": currency.upper(),
             "receipt": receipt or f"receipt_{int(datetime.utcnow().timestamp())}",
             "payment_capture": 1,
             "notes": {
-                "credits": str(credits),
-                "user_id": user_id or "unknown"    # ← NEW
+                "user_id": user_id or "unknown",
+                "plan_id": plan_id or "",
+                "billing_cycle": billing_cycle or "monthly"
             }
         }
 
         try:
-            order = self.client.order.create(data=data)
-            return order
+            return self.client.order.create(data=data)
         except Exception as e:
             raise HTTPException(500, f"Razorpay order creation failed: {str(e)}")
 

@@ -3,10 +3,19 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from io import BytesIO
 from weasyprint import HTML
-from typing import Dict, Any
 from app.models.resume.template import TemplateOut  # your real model
 from datetime import datetime
+import json
+import logging
+from typing import Dict, Any, Optional
+import google.generativeai as genai
+from app.config import settings
 
+logger = logging.getLogger(__name__)
+# Configure Gemini once
+genai.configure(api_key=settings.gemini_api_key)
+MODEL = settings.gemini_model
+logger.info(f"Gemini initialized with model: {MODEL}")
 
 class ResumeGenerator:
     """
@@ -189,3 +198,149 @@ class ResumeGenerator:
                 "Content-Disposition": f'attachment; filename="{filename}"'
             }
         )
+    # ── Add these inside class ResumeGenerator ───────────────────────────────
+
+    @staticmethod
+    async def enhance_resume_content(
+        resume_data: Dict,
+        job_description: Optional[str] = None,
+        tone: str = "professional",
+        focus_quantifiable: bool = True
+    ) -> Dict:
+        """
+        Use Gemini to improve/enrich resume content:
+        - Make bullets more impactful
+        - Add quantifiable achievements when possible
+        - Tailor to job description if provided
+        - Adjust tone (professional / confident / concise / creative)
+        Returns updated resume_data dict (same structure)
+        """
+        content = resume_data.get("content", {})
+        if not content:
+            raise HTTPException(400, "No resume content provided")
+
+        # Flatten content for prompt (or send sections separately)
+        resume_text = json.dumps(content, indent=2)
+
+        prompt = f"""You are an expert resume writer.
+    Improve this resume content to be more impactful, ATS-friendly and recruiter-attractive.
+    Rules:
+    - Use strong action verbs
+    - Quantify achievements wherever logical (add realistic numbers if missing but plausible)
+    - Keep factual – do NOT invent experience
+    - { "Tailor to this job description by emphasizing matching keywords/skills:" + job_description if job_description else ""}
+    - Use {tone} tone
+    - Keep structure identical (same keys)
+
+    Return ONLY valid JSON with the improved "content" object. No extra text.
+
+    Current content:
+    {resume_text}
+    """
+
+        try:
+            improved = call_gemini(prompt, temperature=0.25, max_tokens=3000)
+            improved_content = improved.get("content", improved)  # in case model returns flat dict
+
+            # Merge back (preserve original structure where possible)
+            resume_data["content"] = improved_content
+            return resume_data
+
+        except Exception as e:
+            logger.exception("Content enhancement failed")
+            raise HTTPException(500, f"AI enhancement failed: {str(e)}")
+
+
+    @staticmethod
+    async def generate_ats_optimized_version(
+        resume_data: Dict,
+        job_description: str,
+        max_bullets_per_role: int = 6
+    ) -> Dict:
+        """
+        Create ATS-safe version:
+        - Heavy keyword inclusion from job desc
+        - Simple formatting assumptions
+        - Limit bullets to avoid dilution
+        Returns modified copy of resume_data
+        """
+        # First extract keywords via Gemini (or use previous parse-job endpoint)
+        parse_prompt = f"""Extract important keywords, skills, technologies from this job description.
+    Return ONLY JSON: {{"keywords": list[str], "must_have_skills": list[str]}}
+
+    Job: {job_description}
+    """
+
+        keywords_data = call_gemini(parse_prompt, temperature=0.1, max_tokens=600)
+        keywords = set(keywords_data.get("keywords", []) + keywords_data.get("must_have_skills", []))
+
+        # Now enhance content with keywords
+        content = resume_data.get("content", {})
+        for section in content.values():
+            if isinstance(section, list):
+                for item in section:
+                    if isinstance(item, dict) and "bullets" in item:
+                        item["bullets"] = [
+                            bullet for bullet in item["bullets"][:max_bullets_per_role]
+                            # Simple heuristic: inject keywords if missing (careful!)
+                        ]  # → here you can call Gemini per section if needed
+
+        # Or full re-generation similar to enhance_resume_content but stricter
+        resume_data["content"] = await ResumeGenerator.enhance_resume_content(
+            resume_data,
+            job_description=job_description,
+            tone="concise",
+            focus_quantifiable=True
+        )["content"]
+
+        resume_data["ats_optimized"] = True  # flag
+        return resume_data
+
+
+    @staticmethod
+    async def generate_html_preview(
+        resume_data: Dict,
+        template_data: Dict,
+        inline_css: bool = True
+    ) -> str:
+        """
+        Generate HTML string for frontend preview (without PDF conversion)
+        Useful for instant preview before final PDF download
+        """
+        # Reuse most of your existing HTML building logic
+        # ... (extract the HTML construction part into a helper)
+        # For simplicity, return the same html string you build in generate_resume
+
+        # Example (you can refactor your current html building code into this method)
+        template = TemplateOut(**template_data)
+        # ... build html the same way ...
+
+        return html  # just the <html>...</html> string
+
+
+    @staticmethod
+    async def generate_resume_docx(
+        resume_data: Dict,
+        template_data: Dict
+    ) -> StreamingResponse:
+        """
+        Future: support DOCX export (many ATS prefer .docx over PDF in 2025–2026)
+        Requires python-docx or mammoth + styling approximation
+        """
+        raise HTTPException(501, "DOCX export not implemented yet")
+        # Placeholder – implement later with:
+        # from docx import Document
+        # doc = Document()
+        # ... build paragraphs, runs with styles ...
+
+
+    @staticmethod
+    def validate_resume_data(resume_data: Dict) -> None:
+        """
+        Basic validation before generation
+        Prevents common WeasyPrint crashes or ugly PDFs
+        """
+        content = resume_data.get("content", {})
+        if not content.get("personal_info", {}).get("full_name"):
+            raise HTTPException(400, "Full name is required")
+        # Add more: email format, dates consistency, etc.

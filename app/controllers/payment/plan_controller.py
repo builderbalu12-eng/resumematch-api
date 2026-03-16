@@ -4,82 +4,88 @@ from app.services.mongo import mongo
 from app.models.payment.plan import PlanCreate, PlanUpdate, PlanOut
 from bson import ObjectId
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict
+
+
+def normalize_id(doc: Dict) -> Dict:
+    if doc and "_id" in doc and isinstance(doc["_id"], ObjectId):
+        doc["_id"] = str(doc["_id"])
+    return doc
+
+
+CYCLE_TO_PERIOD = {
+    "monthly": ("monthly", 1),
+    "yearly":  ("yearly",  1),
+}
 
 
 class PlanController:
 
     @staticmethod
-    async def create_plan(data: PlanCreate, current_user: str) -> Dict:  # ← add current_user
-    # async def create_plan(data: PlanCreate) -> Dict:
-        plan_data = {
-            "period": data.period,
-            "interval": data.interval,
-            "item": {
-                "name": data.plan_name,
-                "amount": int(data.amount * 100),
-                "currency": data.currency.upper(),
-                "description": data.description
-            }
-        }
+    async def create_plan(data: PlanCreate, current_user: str) -> Dict:
+        razorpay_plan_id = None
 
-        razorpay_plan = razorpay_service.create_plan(plan_data)
+        # Only call Razorpay for paid + recurring plans
+        if data.amount > 0 and data.is_recurring:
+            period, interval = CYCLE_TO_PERIOD.get(data.billing_cycle, ("monthly", 1))
+            rp_data = {
+                "period": period,
+                "interval": interval,
+                "item": {
+                    "name": data.plan_name,
+                    "amount": int(data.amount * 100),
+                    "currency": data.currency.upper(),
+                    "description": data.description or data.plan_name
+                }
+            }
+            rp_plan = razorpay_service.create_plan(rp_data)
+            razorpay_plan_id = rp_plan["id"]
 
         doc = {
             "_id": ObjectId(),
             "plan_name": data.plan_name,
             "amount": data.amount,
-            "currency": data.currency,
-            "period": data.period,
-            "interval": data.interval,
-            "credits_per_cycle": data.credits_per_cycle,
+            "currency": data.currency.upper(),
+            "is_recurring": data.is_recurring,
+            "billing_cycle": data.billing_cycle,
+            "credits_per_cycle": data.credits_per_cycle,   # ← ADDED
+            "points": data.points,
             "description": data.description,
-            "razorpay_plan_id": razorpay_plan["id"],
+            "razorpay_plan_id": razorpay_plan_id,
             "is_active": data.is_active,
-            "applicable_to": data.applicable_to,
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
 
         await mongo.plans.insert_one(doc)
 
-        # FIX: Convert _id to string
-        doc_safe = doc.copy()
-        doc_safe["_id"] = str(doc_safe["_id"])
-
-        return PlanOut(**doc_safe).model_dump(by_alias=True)
+        return {
+            "status": 200,
+            "success": True,
+            "message": "Plan created successfully",
+            "data": PlanOut(**normalize_id(doc.copy())).model_dump(by_alias=True)
+        }
 
     @staticmethod
     async def get_plan(plan_id: str, current_user: str = None) -> Dict:
         doc = await mongo.plans.find_one({"_id": ObjectId(plan_id)})
         if not doc:
             raise HTTPException(404, "Plan not found")
-        
-        # Convert _id to string
-        doc_safe = doc.copy()
-        if "_id" in doc_safe:
-            doc_safe["_id"] = str(doc_safe["_id"])
-        
-        return PlanOut(**doc_safe).model_dump(by_alias=True)
+        return PlanOut(**normalize_id(doc.copy())).model_dump(by_alias=True)
 
     @staticmethod
     async def list_plans(
         skip: int = 0,
         limit: int = 20,
         active_only: bool = True,
-        current_user: str = None  # ← ADD THIS (can be None for public)
+        current_user: str = None
     ) -> Dict:
         query = {"is_active": True} if active_only else {}
-        cursor = mongo.plans.find(query).skip(skip).limit(limit).sort("created_at", -1)
+        cursor = mongo.plans.find(query).skip(skip).limit(limit).sort("amount", 1)
         plans = await cursor.to_list(length=limit)
         total = await mongo.plans.count_documents(query)
 
-        result = []
-        for p in plans:
-            p_safe = p.copy()
-            if "_id" in p_safe:
-                p_safe["_id"] = str(p_safe["_id"])
-            result.append(PlanOut(**p_safe).model_dump(by_alias=True))
+        result = [PlanOut(**normalize_id(p.copy())).model_dump(by_alias=True) for p in plans]
 
         return {
             "status": 200,
@@ -92,6 +98,7 @@ class PlanController:
                 "limit": limit
             }
         }
+
     @staticmethod
     async def update_plan(plan_id: str, data: PlanUpdate, current_user: str) -> Dict:
         update_dict = data.model_dump(exclude_unset=True)
@@ -108,19 +115,12 @@ class PlanController:
         if result.modified_count == 0:
             raise HTTPException(404, "Plan not found or no changes")
 
-        # Fetch updated document
         updated = await mongo.plans.find_one({"_id": ObjectId(plan_id)})
-
-        # FIX: Convert _id to string for Pydantic
-        updated_safe = updated.copy()
-        if "_id" in updated_safe:
-            updated_safe["_id"] = str(updated_safe["_id"])
-
-        return PlanOut(**updated_safe).model_dump(by_alias=True)
+        return PlanOut(**normalize_id(updated.copy())).model_dump(by_alias=True)
 
     @staticmethod
     async def delete_plan(plan_id: str, current_user: str = None) -> Dict:
         result = await mongo.plans.delete_one({"_id": ObjectId(plan_id)})
         if result.deleted_count == 0:
             raise HTTPException(404, "Plan not found")
-        return {"message": "Plan deleted"}
+        return {"status": 200, "success": True, "message": "Plan deleted"}

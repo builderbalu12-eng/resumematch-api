@@ -3,6 +3,7 @@ from app.config import settings
 
 
 class MongoService:
+    
     def __init__(self):
         self.client = None
         self.db = None
@@ -15,6 +16,13 @@ class MongoService:
             # Test connection
             await self.client.admin.command('ping')
             print("MongoDB Atlas connected successfully")
+
+            # ✅ ADD THESE 3 LINES:
+            await self.db.clients.create_index([("location", "2dsphere")])
+            await self.db.clients.create_index([("owner_id", 1)])
+            await self.db.clients.create_index([("name", "text"), ("company", "text"), ("email", "text"), ("tags", "text")])
+            print("✅ Client indexes created")
+
         except Exception as e:
             print(f"MongoDB connection failed: {str(e)}")
             raise  # let FastAPI know it failed
@@ -71,6 +79,33 @@ class MongoService:
     @property
     def openclaw_sessions(self):
         return self.db.openclaw_sessions
+
+    @property
+    def incoming_resumes(self):
+        return self.db.incoming_resumes
+
+    @property
+    def listed_jobs(self):
+        return self.db.listed_jobs
+
+    @property
+    def job_lists(self):
+        return self.db.job_lists
+
+    @property
+    def listed_jobs(self):
+        return self.db.listed_jobs
+
+    @property
+    def billing_history(self):
+        return self.db.billing_history
+    
+    @property
+    def clients(self):
+        return self.db.clients
+
+
+
 
 
 mongo = MongoService()

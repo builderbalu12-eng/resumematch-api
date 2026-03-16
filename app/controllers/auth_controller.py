@@ -33,15 +33,21 @@ class AuthController:
         hashed_password = pwd_context.hash(user_data.password)
 
         user_doc = {
-            "firstName": user_data.firstName,
-            "lastName": user_data.lastName,
-            "email": user_data.email,
-            "password": hashed_password,
-            "credits": 150.0,
+            "firstName":  user_data.firstName,
+            "lastName":   user_data.lastName,
+            "email":      user_data.email,
+            "password":   hashed_password,
+            "credits":    150.0,
             "created_at": datetime.utcnow(),
             "auth_provider": "local",
-            "google_id": None
+            "google_id":  None,
+
+            # ── Telegram fields ───────────────────
+            "telegram_chat_id":    None,
+            "telegram_linked":     False,
+            "telegram_link_token": None,
         }
+
 
         result = await collection.insert_one(user_doc)
 

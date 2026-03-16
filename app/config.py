@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # ── MongoDB ──────────────────────────────────────────────────
     mongodb_url: str
     mongodb_db_name: str
+    # config.py
+    google_maps_api_key: str = ""
+
 
     # ── JWT / Auth ───────────────────────────────────────────────
     jwt_secret: str
@@ -25,16 +28,23 @@ class Settings(BaseSettings):
     google_redirect_uri: str
 
     # ── Frontend / URLs ──────────────────────────────────────────
-    frontend_uri: str = "http://localhost:5173"
+    frontend_uri: str = ""
     frontend_base_url: str                          # required
     payment_success_url: str = ""                   # can be empty
 
     # ── Gemini (AI features) ─────────────────────────────────────
-    gemini_api_key: str
-    gemini_model: str = "gemini-1.5-flash"          # fallback
-    # Optional: you can add more granularity later
-    # gemini_temperature_default: float = 0.2
-    # gemini_max_tokens_default: int = 1800
+    gemini_api_key: str                             # required
+
+    # Model name – use a currently valid name (Feb 2026)
+    # Recommended options:
+    #   - gemini-1.5-flash-002     → stable, good price/performance
+    #   - gemini-1.5-flash-latest  → always points to newest 1.5-flash
+    #   - gemini-2.0-flash         → newer generation (faster, sometimes cheaper)
+    gemini_model: str = "gemini-2.5-flash"      # safe default/fallback
+
+    # Optional: control generation behavior globally
+    gemini_temperature_default: float = 0.2         # lower = more deterministic
+    gemini_max_tokens_default: int = 2048           # safe limit for flash models
 
     # ── Resume feature specifics ─────────────────────────────────
     resume_template_admins: str = ""   # comma-separated emails
@@ -48,11 +58,17 @@ class Settings(BaseSettings):
     base_openclaw_port: int = 19000
     openclaw_data_dir: str = str(Path.home() / "openclaw_data")
     openclaw_max_users: int = 100
-    openclaw_gateway_token: str = "supersecret123"   # ← consider renaming or moving to secret
+    openclaw_gateway_token: str = "supersecret123"   # ← move to .env only!
+    gemini_temperature_default: float = 0.2
+    gemini_max_tokens_default: int = 4096
+
+    telegram_bot_token:    str = ""
+    telegram_bot_username: str = ""
 
     # ── Computed / helper properties ─────────────────────────────
     @property
     def resume_admin_emails(self) -> Set[str]:
+        """Returns set of admin emails (normalized lowercase)"""
         if not self.resume_template_admins:
             return set()
         return {
@@ -63,7 +79,7 @@ class Settings(BaseSettings):
 
     @property
     def openclaw_base_url(self) -> str:
-        # Better: read from env or make it more flexible
+        """Dynamic OpenClaw gateway URL"""
         host = os.getenv("OPENCLAW_HOST", "localhost")
         port = self.base_openclaw_port
         return f"http://{host}:{port}"
@@ -73,7 +89,6 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
-        # Very useful in containers / CI:
         env_nested_delimiter="__",           # allows MONGODB__URL=... syntax
         env_prefix="",                       # or "APP_" if you prefer namespacing
     )

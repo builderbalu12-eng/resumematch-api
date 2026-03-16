@@ -1,13 +1,12 @@
-# app/models/payment/payment_order.py
 from pydantic import BaseModel, Field
 from typing import Optional
 
 
 class PaymentOrderCreate(BaseModel):
-    amount: float = Field(..., gt=0)
-    currency: str = Field(..., min_length=3, max_length=3)
-    credits_to_add: float = Field(..., gt=0)
-    receipt: Optional[str] = None
+    plan_id: str                                        # fetch amount/currency from plan
+    billing_cycle: str = Field("monthly", pattern="^(monthly|yearly)$")
+    is_recurring: bool = True
+    coupon_code: Optional[str] = None                  # optional discount
 
 
 class PaymentVerify(BaseModel):

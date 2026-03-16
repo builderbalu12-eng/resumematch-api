@@ -5,6 +5,27 @@ from app.controllers.resume_controller import ResumeController
 from app.models.resume.template import TemplateCreate, TemplateOut
 from app.models.resume.user_resume import UserResumeCreate, UserResumeOut
 from app.models.resume.schema import ResumeSchemaCreate, ResumeSchemaOut
+from app.services.incoming_resume_service import IncomingResumeService
+
+from app.controllers.gemini_resume_controller import (
+    process_analyze_resume,
+    process_extract_resume,
+    process_tailor_resume,
+    process_ats_score,
+    process_parse_job,
+    process_generate_cover_letter,
+    process_check_completeness,
+)
+
+from app.models.gemini.schemas import (
+    AnalyzeResumeRequest, AnalyzeResumeResponse,
+    ExtractResumeRequest, ExtractResumeResponse,
+    TailorResumeRequest, TailorResumeResponse,
+    AtsScoreRequest, AtsScoreResponse,
+    ParseJobRequest, ParseJobResponse,
+    GenerateCoverLetterRequest, GenerateCoverLetterResponse,
+    CheckCompletenessRequest, CheckCompletenessResponse,
+)
 
 router = APIRouter(tags=["resume"])
 
@@ -192,3 +213,109 @@ async def generate_resume(
     current_user: str = Depends(get_current_user)
 ):
     return await ResumeController.generate_resume(current_user, resume_id, format)
+
+
+
+# --------------------------------- GEMINI ROUTES ----------------------------------
+
+
+@router.post("/analyze-resume", response_model=AnalyzeResumeResponse)
+async def gemini_analyze_resume(
+    request: AnalyzeResumeRequest,
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Analyze how well a resume matches a job description
+    Credits used: 1
+    """
+    return await process_analyze_resume(request, current_user)
+
+
+@router.post("/extract-resume", response_model=ExtractResumeResponse)
+async def gemini_extract_resume(
+    request: ExtractResumeRequest,
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Extract structured resume data from raw document text
+    Credits used: 2
+    """
+    return await process_extract_resume(request, current_user)
+
+
+@router.post("/tailor-resume", response_model=TailorResumeResponse)
+async def gemini_tailor_resume(
+    request: TailorResumeRequest,
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Generate a tailored/optimized version of the resume for a job
+    Credits used: 2
+    """
+    return await process_tailor_resume(request, current_user)
+
+
+@router.post("/ats-score", response_model=AtsScoreResponse)
+async def gemini_ats_score(
+    request: AtsScoreRequest,
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Calculate ATS compatibility score + suggestions
+    Credits used: 1
+    """
+    return await process_ats_score(request, current_user)
+
+
+@router.post("/parse-job", response_model=ParseJobResponse)
+async def gemini_parse_job(
+    request: ParseJobRequest,
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Parse structured data from a job description
+    Credits used: 1
+    """
+    return await process_parse_job(request, current_user)
+
+
+@router.post("/generate-cover-letter", response_model=GenerateCoverLetterResponse)
+async def gemini_generate_cover_letter(
+    request: GenerateCoverLetterRequest,
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Generate a tailored cover letter based on resume + job
+    Credits used: 3
+    """
+    return await process_generate_cover_letter(request, current_user)
+
+
+@router.post("/check-completeness", response_model=CheckCompletenessResponse)
+async def gemini_check_completeness(
+    request: CheckCompletenessRequest,
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Check how complete a resume is + suggestions for improvement
+    Credits used: 1
+    """
+    return await process_check_completeness(request, current_user)
+
+
+# ── Incoming Resume (Save + Read) ─────────────────────────────────────
+@router.get("/incoming-resume", response_model=dict)
+async def get_incoming_resume(
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Get the latest incoming resume extraction for the current user.
+    Returns the saved extracted_data (flexible JSON from Gemini).
+    """
+    data = await IncomingResumeService.get_latest(current_user)
+    if not data:
+        raise HTTPException(status_code=404, detail="No incoming resume found for this user")
+
+    # Clean MongoDB _id
+    data.pop("_id", None)
+    return data

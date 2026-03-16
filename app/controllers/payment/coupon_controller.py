@@ -1,14 +1,12 @@
-# app/controllers/payment/coupon_controller.py
 from fastapi import HTTPException
 from app.services.mongo import mongo
 from app.models.payment.coupon import CouponCreate, CouponUpdate, CouponOut
 from bson import ObjectId
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict
 
 
 def normalize_id(doc: Dict) -> Dict:
-    """Convert MongoDB _id to string for Pydantic"""
     if doc and "_id" in doc and isinstance(doc["_id"], ObjectId):
         doc["_id"] = str(doc["_id"])
     return doc
@@ -17,17 +15,32 @@ def normalize_id(doc: Dict) -> Dict:
 class CouponController:
 
     @staticmethod
-    async def create_coupon(data: CouponCreate) -> Dict:
+    async def create_coupon(data: CouponCreate, current_user: str = None) -> Dict:
+
+        # Validate: individual coupon must have user_id
+        if data.coupon_type == "individual" and not data.applicable_to_user_id:
+            raise HTTPException(400, "Individual coupon requires applicable_to_user_id")
+
+        # Validate: domain coupon must have domains
+        if data.coupon_type == "domain" and not data.applicable_to_domains:
+            raise HTTPException(400, "Domain coupon requires applicable_to_domains")
+
+        # Validate: must have either percent or amount discount
+        if not data.discount_percent and not data.discount_amount:
+            raise HTTPException(400, "Coupon must have discount_percent or discount_amount")
+
         doc = {
             "_id": ObjectId(),
             "code": data.code.upper(),
+            "coupon_type": data.coupon_type,                        # ← NEW
+            "applicable_to_user_id": data.applicable_to_user_id,   # ← NEW
+            "applicable_to_domains": data.applicable_to_domains,
             "discount_percent": data.discount_percent,
             "discount_amount": data.discount_amount,
+            "applicable_to_plans": data.applicable_to_plans,
             "max_uses": data.max_uses,
             "expires_at": data.expires_at,
             "is_active": data.is_active,
-            "applicable_to_plans": data.applicable_to_plans,
-            "applicable_to_domains": data.applicable_to_domains,
             "uses_count": 0,
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
@@ -35,35 +48,33 @@ class CouponController:
 
         await mongo.coupons.insert_one(doc)
 
-        # Convert _id before returning
-        doc_safe = normalize_id(doc.copy())
-        return CouponOut(**doc_safe).model_dump(by_alias=True)
+        return {
+            "status": 200,
+            "success": True,
+            "message": "Coupon created successfully",
+            "data": CouponOut(**normalize_id(doc.copy())).model_dump(by_alias=True)
+        }
 
     @staticmethod
-    async def get_coupon(coupon_id: str) -> Dict:
+    async def get_coupon(coupon_id: str, current_user: str = None) -> Dict:
         doc = await mongo.coupons.find_one({"_id": ObjectId(coupon_id)})
         if not doc:
             raise HTTPException(404, "Coupon not found")
-
-        doc_safe = normalize_id(doc.copy())
-        return CouponOut(**doc_safe).model_dump(by_alias=True)
+        return CouponOut(**normalize_id(doc.copy())).model_dump(by_alias=True)
 
     @staticmethod
     async def list_coupons(
         skip: int = 0,
         limit: int = 20,
         active_only: bool = True,
-        current_user: str = None  # optional for future filtering
+        current_user: str = None
     ) -> Dict:
         query = {"is_active": True} if active_only else {}
         cursor = mongo.coupons.find(query).skip(skip).limit(limit).sort("created_at", -1)
         coupons = await cursor.to_list(length=limit)
         total = await mongo.coupons.count_documents(query)
 
-        result = []
-        for c in coupons:
-            c_safe = normalize_id(c.copy())
-            result.append(CouponOut(**c_safe).model_dump(by_alias=True))
+        result = [CouponOut(**normalize_id(c.copy())).model_dump(by_alias=True) for c in coupons]
 
         return {
             "status": 200,
@@ -78,7 +89,7 @@ class CouponController:
         }
 
     @staticmethod
-    async def update_coupon(coupon_id: str, data: CouponUpdate) -> Dict:
+    async def update_coupon(coupon_id: str, data: CouponUpdate, current_user: str = None) -> Dict:
         update_dict = data.model_dump(exclude_unset=True)
         if not update_dict:
             raise HTTPException(400, "No fields to update")
@@ -94,11 +105,15 @@ class CouponController:
             raise HTTPException(404, "Coupon not found or no changes")
 
         updated = await mongo.coupons.find_one({"_id": ObjectId(coupon_id)})
-        updated_safe = normalize_id(updated.copy())
-        return CouponOut(**updated_safe).model_dump(by_alias=True)
+        return {
+            "status": 200,
+            "success": True,
+            "message": "Coupon updated successfully",
+            "data": CouponOut(**normalize_id(updated.copy())).model_dump(by_alias=True)
+        }
 
     @staticmethod
-    async def delete_coupon(coupon_id: str) -> Dict:
+    async def delete_coupon(coupon_id: str, current_user: str = None) -> Dict:
         result = await mongo.coupons.delete_one({"_id": ObjectId(coupon_id)})
         if result.deleted_count == 0:
             raise HTTPException(404, "Coupon not found")
