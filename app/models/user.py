@@ -32,8 +32,9 @@ class UserResponse(BaseModel):
     email: EmailStr
     credits: float
     auth_provider: str
-    telegram_linked: bool = False
+    telegram_linked:  bool          = False
     telegram_chat_id: Optional[str] = None
+    has_payments:     bool          = False    # ✅ added
 
     class Config:
         populate_by_name = True

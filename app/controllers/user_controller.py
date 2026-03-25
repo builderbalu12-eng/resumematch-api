@@ -1,3 +1,5 @@
+# app/controllers/user_controller.py
+
 from fastapi import HTTPException, status, Depends
 from pydantic import BaseModel
 from bson import ObjectId
@@ -15,14 +17,18 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 class UserResponseData(BaseModel):
     user: UserResponse
 
+
 class UserResponseModel(BaseModel):
     status:  int
     success: bool
     message: str
     data:    UserResponseData
 
+
 class CreditsResponseData(BaseModel):
-    credits: float
+    credits:      float
+    has_payments: bool
+
 
 class CreditsResponseModel(BaseModel):
     status:  int
@@ -48,6 +54,8 @@ class UserController:
             user_doc["telegram_linked"] = False
         if "telegram_link_token" not in user_doc:
             user_doc["telegram_link_token"] = None
+        if "has_payments" not in user_doc:
+            user_doc["has_payments"] = False      # ✅ default
         return user_doc
 
     @staticmethod
@@ -72,6 +80,13 @@ class UserController:
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
+        # ✅ Check if user has made at least one real payment
+        payment_count = await mongo.payment_logs.count_documents({
+            "user_id": str(user["_id"]),
+            "type":    "add"
+        })
+        user["has_payments"] = payment_count > 0
+
         user = UserController._prepare_user_data(user)
         return UserResponseModel(
             status=200, success=True,
@@ -89,14 +104,12 @@ class UserController:
         if user_id != current_user:
             raise HTTPException(status_code=403, detail="Not authorized")
 
-        query       = UserController._get_user_query(user_id)
-        user        = await mongo.users.find_one(query)
+        query = UserController._get_user_query(user_id)
+        user  = await mongo.users.find_one(query)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
         update_data = user_data.dict(exclude_unset=True)
-
-        # Hard block — email must NEVER be changed
         update_data.pop("email", None)
 
         if not update_data:
@@ -104,9 +117,16 @@ class UserController:
 
         await mongo.users.update_one(query, {"$set": update_data})
 
-        updated = UserController._prepare_user_data(
-            await mongo.users.find_one(query)
-        )
+        updated = await mongo.users.find_one(query)
+
+        # ✅ Re-check payments after update too
+        payment_count = await mongo.payment_logs.count_documents({
+            "user_id": str(updated["_id"]),
+            "type":    "add"
+        })
+        updated["has_payments"] = payment_count > 0
+
+        updated = UserController._prepare_user_data(updated)
         return UserResponseModel(
             status=200, success=True,
             message="Profile updated successfully",
@@ -128,28 +148,24 @@ class UserController:
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Google/social users have no password
         if not user.get("password"):
             raise HTTPException(
                 status_code=400,
                 detail="Password change not available for Google login accounts"
             )
 
-        # Verify current password
         if not pwd_context.verify(payload.current_password, user["password"]):
             raise HTTPException(
                 status_code=401,
                 detail="Current password is incorrect"
             )
 
-        # Confirm new passwords match
         if payload.new_password != payload.confirm_password:
             raise HTTPException(
                 status_code=400,
                 detail="New password and confirm password do not match"
             )
 
-        # Min length check
         if len(payload.new_password) < 6:
             raise HTTPException(
                 status_code=400,
@@ -162,10 +178,7 @@ class UserController:
             {"$set": {"password": hashed}}
         )
 
-        return {
-            "success": True,
-            "message": "Password changed successfully"
-        }
+        return {"success": True, "message": "Password changed successfully"}
 
     # ── GET /user/me/credits ───────────────────────────
     @staticmethod
@@ -183,8 +196,17 @@ class UserController:
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
+        # ✅ Check payments
+        payment_count = await mongo.payment_logs.count_documents({
+            "user_id": str(user["_id"]),
+            "type":    "add"
+        })
+
         return CreditsResponseModel(
             status=200, success=True,
             message="Credits retrieved successfully",
-            data=CreditsResponseData(credits=user["credits"])
+            data=CreditsResponseData(
+                credits=user["credits"],
+                has_payments=payment_count > 0
+            )
         )

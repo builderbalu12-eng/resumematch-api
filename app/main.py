@@ -62,9 +62,9 @@ async def startup_event():
     await mongo.connect()
 
     # Restart previously connected user gateways
-    async for sess in mongo.openclaw_sessions.find({"status": "connected"}):
-        OpenClawBridge.start_gateway(sess["profile"], sess["port"])
-        print(f"Restarted OpenClaw gateway → {sess['profile']} :{sess['port']}")
+    # async for sess in mongo.openclaw_sessions.find({"status": "connected"}):
+    #     OpenClawBridge.start_gateway(sess["profile"], sess["port"])
+    #     print(f"Restarted OpenClaw gateway → {sess['profile']} :{sess['port']}")
         
 @app.on_event("shutdown")
 async def shutdown_event():

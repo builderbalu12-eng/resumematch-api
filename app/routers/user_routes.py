@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from typing import Any
+from typing import Any, Dict
 
 from app.models.user import UserResponse, UserUpdate, ChangePasswordRequest
 from app.controllers.user_controller import (
@@ -7,7 +7,9 @@ from app.controllers.user_controller import (
     UserResponseModel,
     CreditsResponseModel,
 )
+from app.services.credits_service import CreditsService
 from app.middleware.auth import get_current_user
+
 
 router = APIRouter(prefix="/user", tags=["User"])
 
@@ -42,8 +44,6 @@ async def get_me(
 
 # ─────────────────────────────────────────────────────
 # PATCH /api/user/me
-# Update firstName and/or lastName only
-# Email is permanently blocked from update
 # ─────────────────────────────────────────────────────
 @router.patch(
     "/me",
@@ -60,7 +60,6 @@ async def update_me(
 
 # ─────────────────────────────────────────────────────
 # POST /api/user/me/change-password
-# Only works for local auth users (not Google)
 # ─────────────────────────────────────────────────────
 @router.post(
     "/me/change-password",
@@ -87,3 +86,24 @@ async def get_credits(
 ):
     user_id = _extract_user_id(current_user)
     return await UserController.get_user_credits(user_id, user_id)
+
+
+# ─────────────────────────────────────────────────────
+# GET /api/user/feature-cost/{feature}
+# e.g. GET /api/user/feature-cost/find_leads
+# ─────────────────────────────────────────────────────
+@router.get(
+    "/feature-cost/{feature}",
+    response_model=Dict,
+    summary="Get credit cost for a specific feature",
+)
+async def get_feature_cost(
+    feature: str,
+    current_user: Any = Depends(get_current_user),
+):
+    cost = await CreditsService.get_feature_cost(feature)
+    return {
+        "success":      True,
+        "feature":      feature,
+        "cost_per_unit": int(cost)
+    }

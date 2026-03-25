@@ -3,17 +3,22 @@
 import secrets
 import qrcode
 import io
+import asyncio
 
 from fastapi import HTTPException, status
 from bson import ObjectId
 
 from app.services.mongo import mongo
 from app.services.telegram_service import telegram_service
-from app.services.telegram.message_builder import message_builder
 from app.models.telegram.schemas import TelegramWebhookPayload
 from app.controllers.telegram.help import handle_help
 from app.controllers.telegram.account import handle_credits, handle_status
-from app.controllers.telegram.leads import handle_find_leads, handle_my_leads
+from app.controllers.telegram.leads import (
+    handle_find_leads,
+    handle_my_leads,
+    handle_list_cities,
+    handle_list_categories,
+)
 from app.config import settings
 
 
@@ -85,7 +90,6 @@ class TelegramController:
 
     # ── Webhook — main router ─────────────────────────
     async def handle_webhook(self, data: dict) -> dict:
-        # ✅ Use typed schema
         payload = TelegramWebhookPayload(**data)
         message = payload.message
         if not message:
@@ -98,13 +102,16 @@ class TelegramController:
         if not text:
             return {"ok": True}
 
+        # Process command in background so Telegram gets fast 200
+        asyncio.create_task(self._process_command(chat_id, text, name))
+        return {"ok": True}
+
+    async def _process_command(self, chat_id: str, text: str, name: str):
         cmd = text.split()[0].lower()
 
-        # ── /start handled here (needs token logic) ────
         if cmd == "/start":
             await self._handle_start(chat_id, text, name)
 
-        # ── All other commands → modular controllers ───
         elif cmd == "/help":
             await handle_help(chat_id)
 
@@ -120,13 +127,17 @@ class TelegramController:
         elif cmd == "/myleads":
             await handle_my_leads(chat_id, text)
 
+        elif cmd == "/listallcities":
+            await handle_list_cities(chat_id)
+
+        elif cmd == "/listallcategories":
+            await handle_list_categories(chat_id)
+
         else:
             await telegram_service.send_message(
                 chat_id,
                 "❓ Unknown command. Type /help to see all commands."
             )
-
-        return {"ok": True}
 
     # ── /start <token> ────────────────────────────────
     async def _handle_start(self, chat_id: str, text: str, name: str):

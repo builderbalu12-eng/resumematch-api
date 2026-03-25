@@ -104,15 +104,18 @@ async def find_leads(
 ):
     from app.services.mongo import mongo
 
-    # ✅ Check credits BEFORE searching (2 credits per lead)
-    credits_needed = min(data.limit, 50) * 2
+    # ✅ Fetch cost dynamically from credits_on_features collection
+    cost_per_lead  = await CreditsService.get_feature_cost("find_leads")
+    credits_needed = min(data.limit, 50) * cost_per_lead
+
     user = await mongo.users.find_one({"_id": ObjectId(current_user)})
     if not user:
         raise HTTPException(404, "User not found")
+
     if user.get("credits", 0) < credits_needed:
         raise HTTPException(
             400,
-            f"Insufficient credits. Need {credits_needed}, have {int(user.get('credits', 0))}"
+            f"Insufficient credits. Need {int(credits_needed)}, have {int(user.get('credits', 0))}"
         )
 
     saved = await lead_finder.find_and_save_leads(
@@ -124,8 +127,8 @@ async def find_leads(
         limit=min(data.limit, 50)
     )
 
-    # ✅ Deduct 2 credits per lead actually saved (not duplicates)
-    actual_credits = len(saved) * 2
+    # ✅ Deduct only for actually saved leads (not duplicates)
+    actual_credits = len(saved) * cost_per_lead
     if actual_credits > 0:
         success, message = await CreditsService.deduct_credits(
             user_id=current_user,
@@ -134,13 +137,37 @@ async def find_leads(
         if not success:
             raise HTTPException(400, message)
 
+        # ✅ Log with feature details
+        await CreditsService.log_deduction(
+            user_id=current_user,
+            amount=float(actual_credits),
+            feature="find_leads",
+            function_name="find_leads_api",
+            description=f"Found {len(saved)} leads in {data.city} [{data.category}]"
+        )
+
     return {
         "status": 200,
         "success": True,
         "message": f"Found and saved {len(saved)} new leads",
         "data": {
-            "total": len(saved),
-            "leads": saved,
-            "credits_used": actual_credits
+            "total":        len(saved),
+            "leads":        saved,
+            "credits_used": int(actual_credits)
         }
+    }
+
+
+
+# ─── Get Find Leads Credit Cost ───────────────────────────
+@router.get("/credits/find-leads", response_model=Dict)
+async def get_credits_on_find_leads(
+    current_user: str = Depends(get_current_user)
+):
+    cost = await CreditsService.get_feature_cost("find_leads")
+    return {
+        "success":       True,
+        "feature":       "find_leads",
+        "cost_per_unit": int(cost),
+        "unit":          "per lead"
     }

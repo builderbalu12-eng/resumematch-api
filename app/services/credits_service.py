@@ -19,7 +19,6 @@ class CreditsService:
         Add credits after successful payment.
         Prevents double-crediting using transaction_id.
         """
-        # Prevent double crediting
         existing = await mongo.payment_logs.find_one({"transaction_id": transaction_id})
         if existing:
             print(f"Transaction {transaction_id} already processed → skipping")
@@ -30,40 +29,40 @@ class CreditsService:
             raise HTTPException(404, "User not found")
 
         current_credits = user.get("credits", 0.0)
-        new_credits = current_credits + credits
+        new_credits     = current_credits + credits
 
         await mongo.users.update_one(
             {"_id": ObjectId(user_id)},
             {
                 "$set": {
-                    "credits": new_credits,
+                    "credits":    new_credits,
                     "updated_at": datetime.utcnow()
                 }
             }
         )
 
         await mongo.payment_logs.insert_one({
-            "user_id": user_id,
+            "user_id":        user_id,
             "transaction_id": transaction_id,
-            "amount_paid": amount_paid,
-            "currency": currency,
-            "credits_added": credits,
-            "status": "succeeded",
-            "created_at": datetime.utcnow(),
-            "type": "add"
+            "amount_paid":    amount_paid,
+            "currency":       currency,
+            "credits_added":  credits,
+            "status":         "succeeded",
+            "created_at":     datetime.utcnow(),
+            "type":           "add",
+            "new_credits":    new_credits,
         })
 
         return new_credits
 
-
     @staticmethod
     async def deduct_credits(
         user_id: str,
-        amount: float = 1.0
+        amount:  float = 1.0
     ) -> Tuple[bool, str]:
         """
-        Deduct credits when using a paid feature (Gemini endpoints).
-        Returns (success: bool, message: str)
+        Deduct credits when using a paid feature (Gemini / lead finder).
+        Now only updates users + credits_log (no payment_logs).
         """
         user = await mongo.users.find_one({"_id": ObjectId(user_id)})
         if not user:
@@ -80,38 +79,76 @@ class CreditsService:
             {"_id": ObjectId(user_id)},
             {
                 "$set": {
-                    "credits": new_credits,
+                    "credits":    new_credits,
                     "updated_at": datetime.utcnow()
                 }
             }
         )
 
-        await mongo.payment_logs.insert_one({
-            "user_id": user_id,
-            "credits_deducted": amount,
-            "status": "consumed",
-            "created_at": datetime.utcnow(),
-            "type": "deduct",
-            "reason": f"Used {amount} credit(s) for AI feature"
+        # Optional: you can log here, or rely on log_deduction() from callers
+        await mongo.credits_log.insert_one({
+            "user_id":       user_id,
+            "type":          "deduction",
+            "amount":        amount,
+            "feature":       "generic",
+            "function_name": "deduct_credits",
+            "description":   "Generic credits deduction",
+            "balance_after": new_credits,
+            "created_at":    datetime.utcnow(),
         })
 
         return True, f"Deducted {amount}. Remaining: {new_credits:.1f}"
-    
+
     @staticmethod
     async def refund_credits(user_id: str, amount: float, reason: str = "Processing failed"):
         user = await mongo.users.find_one({"_id": ObjectId(user_id)})
         if user:
             current = user.get("credits", 0.0)
-            new = current + amount
+            new     = current + amount
             await mongo.users.update_one(
                 {"_id": ObjectId(user_id)},
                 {"$set": {"credits": new, "updated_at": datetime.utcnow()}}
             )
             await mongo.payment_logs.insert_one({
-                "user_id": user_id,
+                "user_id":          user_id,
                 "credits_refunded": amount,
-                "status": "refunded",
-                "created_at": datetime.utcnow(),
-                "type": "refund",
-                "reason": reason
+                "status":           "refunded",
+                "created_at":       datetime.utcnow(),
+                "type":             "refund",
+                "reason":           reason
             })
+
+    @staticmethod
+    async def log_deduction(
+        user_id:       str,
+        amount:        float,
+        feature:       str = "unknown",
+        function_name: str = "unknown",
+        description:   str = "",
+    ) -> None:
+        user = await mongo.users.find_one(
+            {"_id": ObjectId(user_id)},
+            {"credits": 1}
+        )
+        balance_after = user.get("credits", 0) if user else 0
+
+        await mongo.credits_log.insert_one({
+            "_id":           ObjectId(),
+            "user_id":       user_id,
+            "type":          "deduction",
+            "amount":        amount,
+            "feature":       feature,
+            "function_name": function_name,
+            "description":   description,
+            "balance_after": balance_after,
+            "created_at":    datetime.utcnow(),
+        })
+
+    @staticmethod
+    async def get_feature_cost(feature: str) -> float:
+        doc = await mongo.credits_on_features.find_one(
+            {"feature": feature, "is_active": True}
+        )
+        if not doc:
+            return 0.0
+        return float(doc.get("credits_per_unit", 0))

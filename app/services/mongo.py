@@ -3,29 +3,36 @@ from app.config import settings
 
 
 class MongoService:
-    
+
     def __init__(self):
         self.client = None
-        self.db = None
+        self.db     = None
 
     async def connect(self):
         try:
             self.client = AsyncIOMotorClient(settings.mongodb_url)
-            self.db = self.client[settings.mongodb_db_name]
+            self.db     = self.client[settings.mongodb_db_name]
 
-            # Test connection
             await self.client.admin.command('ping')
             print("MongoDB Atlas connected successfully")
 
-            # ✅ ADD THESE 3 LINES:
+            # ── Clients indexes ───────────────────────────
             await self.db.clients.create_index([("location", "2dsphere")])
             await self.db.clients.create_index([("owner_id", 1)])
-            await self.db.clients.create_index([("name", "text"), ("company", "text"), ("email", "text"), ("tags", "text")])
+            await self.db.clients.create_index([
+                ("name", "text"), ("company", "text"),
+                ("email", "text"), ("tags", "text")
+            ])
             print("✅ Client indexes created")
+
+            # ── Credits indexes ───────────────────────────
+            await self.db.credits_log.create_index([("user_id", 1), ("created_at", -1)])
+            await self.db.credits_on_features.create_index("feature", unique=True)
+            print("✅ Credits indexes created")
 
         except Exception as e:
             print(f"MongoDB connection failed: {str(e)}")
-            raise  # let FastAPI know it failed
+            raise
 
     async def close(self):
         if self.client:
@@ -42,7 +49,6 @@ class MongoService:
     @property
     def applications(self):
         return self.db.applications
-
 
     @property
     def resume_templates(self):
@@ -93,19 +99,20 @@ class MongoService:
         return self.db.job_lists
 
     @property
-    def listed_jobs(self):
-        return self.db.listed_jobs
-
-    @property
     def billing_history(self):
         return self.db.billing_history
-    
+
     @property
     def clients(self):
         return self.db.clients
 
+    @property
+    def credits_on_features(self):
+        return self.db.credits_on_features
 
-
+    @property
+    def credits_log(self):                    # ✅ added
+        return self.db.credits_log
 
 
 mongo = MongoService()

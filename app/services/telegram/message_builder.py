@@ -17,12 +17,18 @@ class MessageBuilder:
         return """🤖 <b>LeadFinder Bot Commands:</b>
 
 🔍 <b>LEADS</b>
-/findleads &lt;city&gt; &lt;category&gt;
+/findleads &lt;city&gt; &lt;category&gt; [radius_km]
 <i>Example: /findleads delhi jeweler</i>
+<i>With radius: /findleads delhi jeweler 10</i>
 Categories: restaurant, jeweler, salon, gym, clinic, clothing, bakery, hotel, realestate, carrepair, all
 
-/myleads — View all saved leads
+/myleads — View all leads
 /myleads &lt;category&gt; — Filter by category
+/myleads &lt;page&gt; — Go to page (e.g. /myleads 2)
+/myleads &lt;category&gt; &lt;page&gt; — (e.g. /myleads gym 2)
+
+📍 /listallcities — Cities with saved leads
+📂 /listallcategories — All categories (✅ saved / 🔍 not yet)
 
 💳 <b>ACCOUNT</b>
 /credits — Credit balance
@@ -33,15 +39,16 @@ Categories: restaurant, jeweler, salon, gym, clinic, clothing, bakery, hotel, re
 /help — Show this message
 
 ━━━━━━━━━━━━━━━━━━
-💡 Each lead costs 2 credits."""
+💡 Credit cost depends on your plan. Type /credits to check."""
 
     @staticmethod
-    def credits(credits: float, plan: str) -> str:
+    def credits(credits: float, plan: str, cost_per_lead: float = 0) -> str:
+        cost_line = f"💡 Find Leads costs <b>{int(cost_per_lead)} credits</b> per lead." if cost_per_lead else ""
         return (
             f"💳 <b>Credits</b>\n\n"
             f"Balance: <b>{int(credits)} credits</b>\n"
             f"Plan: <b>{plan}</b>\n\n"
-            f"💡 Each lead costs 2 credits."
+            f"{cost_line}"
         )
 
     @staticmethod
@@ -76,7 +83,13 @@ Categories: restaurant, jeweler, salon, gym, clinic, clothing, bakery, hotel, re
         return "\n".join(lines)
 
     @staticmethod
-    def my_leads_result(leads: list, total: int, category: Optional[str]) -> str:
+    def my_leads_result(
+        leads: list,
+        total: int,
+        category: Optional[str],
+        page: int = 1,
+        pages: int = 1
+    ) -> str:
         if not leads:
             cat = f" for <b>{category}</b>" if category else ""
             return (
@@ -84,8 +97,10 @@ Categories: restaurant, jeweler, salon, gym, clinic, clothing, bakery, hotel, re
                 f"Use /findleads &lt;city&gt; &lt;category&gt; to find some!"
             )
 
-        lines = [f"📋 <b>Your Leads</b> (showing {len(leads)} of {total})\n"]
-        for i, lead in enumerate(leads, 1):
+        cat_label = f" [{category}]" if category else ""
+        lines = [f"📋 <b>Your Leads{cat_label}</b> (page {page}/{pages} — {total} total)\n"]
+
+        for i, lead in enumerate(leads, start=(page - 1) * 10 + 1):
             website = "✅" if lead.get("has_website") else "❌"
             address = (lead.get("address") or "")[:40]
             lines.append(
@@ -93,7 +108,15 @@ Categories: restaurant, jeweler, salon, gym, clinic, clothing, bakery, hotel, re
                 f"   📍 {address}...\n"
                 f"   {website} | ⭐ {lead.get('rating', 'N/A')} | 📞 {lead.get('phone', 'N/A')}\n"
             )
-        return "\n".join(lines)
+
+        if pages > 1:
+            cat_arg = f" {category}" if category else ""
+            if page < pages:
+                lines.append(f"\n➡️ Next page: <code>/myleads{cat_arg} {page + 1}</code>")
+            if page > 1:
+                lines.append(f"⬅️ Prev page: <code>/myleads{cat_arg} {page - 1}</code>")
+
+        return "\n".join(filter(None, lines))
 
     @staticmethod
     def insufficient_credits(needed: int, have: int) -> str:

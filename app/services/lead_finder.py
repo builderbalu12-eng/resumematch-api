@@ -62,20 +62,23 @@ class LeadFinder:
         gmaps = googlemaps.Client(key=settings.google_maps_api_key)
         loop = asyncio.get_event_loop()
 
-        # Step 1 — geocode city
+        # Step 1 — geocode
         geocode = await loop.run_in_executor(None, lambda: gmaps.geocode(city))
+        print(f"🌍 Geocode result for '{city}': {geocode[0]['geometry']['location'] if geocode else 'NOT FOUND'}")
         if not geocode:
+            print(f"❌ City '{city}' not found!")
             return []
 
         city_lat = geocode[0]['geometry']['location']['lat']
         city_lng = geocode[0]['geometry']['location']['lng']
 
-        # Step 2 — nearby search (max 3 pages)
+        # Step 2 — nearby search
         place_type = CATEGORY_MAP.get(category, category)
+        print(f"🔎 Searching place_type='{place_type}' near ({city_lat}, {city_lng}) radius={radius_km}km")
         all_places = []
         token = None
 
-        for _ in range(3):
+        for page in range(3):
             if len(all_places) >= max_results:
                 break
             kwargs = {
@@ -88,16 +91,19 @@ class LeadFinder:
                 await asyncio.sleep(2)
 
             resp = await loop.run_in_executor(None, lambda k=kwargs: gmaps.places_nearby(**k))
-            all_places.extend(resp.get("results", []))
+            page_results = resp.get("results", [])
+            print(f"📄 Page {page+1}: got {len(page_results)} places | status={resp.get('status')}")
+            all_places.extend(page_results)
             token = resp.get("next_page_token")
             if not token:
                 break
 
-        # ✅ Cap to max_results
+        print(f"📊 Total places fetched: {len(all_places)}")
         all_places = all_places[:max_results]
 
-        # Step 3 — fetch details + save
+        # Step 3 — save
         saved = []
+        skipped_duplicate = 0
 
         for place in all_places:
             try:
@@ -161,11 +167,14 @@ class LeadFinder:
 
             if not existing:
                 await mongo.clients.insert_one(doc)
-                doc_out = {**doc}
-                doc_out["_id"] = str(doc_out["_id"])
+                doc_out = {**doc, "_id": str(doc["_id"])}
                 saved.append(doc_out)
+                print(f"✅ Saved: {doc['name']}")
+            else:
+                skipped_duplicate += 1
+                print(f"⏭️ Duplicate skipped: {doc['name']}")
 
-        print(f"✅ Saved {len(saved)} new leads for '{category}' in '{city}'")
+        print(f"✅ Saved {len(saved)} | ⏭️ Skipped {skipped_duplicate} duplicates for '{category}' in '{city}'")
         return saved
 
 
