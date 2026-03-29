@@ -1,0 +1,323 @@
+# ZenLeadJob — Database Documentation
+
+**Cluster:** Cluster0  
+**Database:** `zenleadJob`  
+**Last Updated:** March 2026
+
+---
+
+## Overview
+
+ZenLeadJob is a SaaS platform that helps users find job listings and B2B leads. It supports subscription billing (Razorpay), a credit-based feature system, resume parsing, job matching, and client/lead management.
+
+---
+
+## Collections
+
+### 1. `users`
+Stores registered user accounts.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `firstName` | String | First name |
+| `lastName` | String | Last name |
+| `email` | String | Unique email address |
+| `password` | String | Bcrypt-hashed password (`null` for OAuth users) |
+| `credits` | Number | Current credit balance |
+| `auth_provider` | String | `"local"` or `"google"` |
+| `google_id` | String | Google OAuth ID (nullable) |
+| `active_plan` | String | Name of the currently active plan |
+| `telegram_chat_id` | String | Linked Telegram chat ID |
+| `telegram_linked` | Boolean | Whether Telegram is connected |
+| `created_at` | Date | Account creation timestamp |
+| `updated_at` | Date | Last update timestamp |
+
+**Notes:** Passwords are hashed with bcrypt (cost factor 12). Google OAuth users have `password: null`.
+
+---
+
+### 2. `plans`
+Defines available subscription tiers.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `plan_name` | String | Display name (e.g. `"Free"`, `"Pro"`) |
+| `amount` | Number | Price in `currency` |
+| `currency` | String | e.g. `"INR"` |
+| `is_recurring` | Boolean | Whether it auto-renews |
+| `billing_cycle` | String | e.g. `"monthly"` |
+| `credits_per_cycle` | Number | Credits granted per billing period |
+| `points` | Array | Feature bullet points shown in UI |
+| `description` | String | Short marketing description |
+| `razorpay_plan_id` | String | Razorpay plan ID (nullable for free plans) |
+| `is_active` | Boolean | Whether the plan is publicly available |
+| `created_at` | Date | — |
+| `updated_at` | Date | — |
+
+**Sample Plans:**
+
+| Plan | Amount | Credits/Cycle | Recurring |
+|---|---|---|---|
+| Free | ₹0 | 50 | No |
+| Pro | ₹200 | 200 | Yes |
+
+---
+
+### 3. `subscriptions`
+Tracks user subscription history and current state.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `user_id` | String (ref: users) | Owning user |
+| `plan_id` | String (ref: plans) | Subscribed plan |
+| `plan_name` | String | Denormalized plan name |
+| `amount_paid` | Number | Amount charged |
+| `currency` | String | — |
+| `billing_cycle` | String | — |
+| `is_recurring` | Boolean | — |
+| `razorpay_subscription_id` | String | Razorpay subscription reference |
+| `stripe_subscription_id` | String | Stripe reference (nullable) |
+| `status` | String | `"active"`, `"created"`, `"cancelled"` |
+| `start_date` | Date | Subscription start |
+| `renewal_date` | Date | Next renewal date |
+| `cancelled_at` | Date | Cancellation timestamp (nullable) |
+| `coupon_id` | String | Applied coupon (nullable) |
+| `created_at` | Date | — |
+| `updated_at` | Date | — |
+
+**Indexes:** `user_id`, `razorpay_subscription_id`
+
+---
+
+### 4. `billing_history`
+Immutable record of every successful payment event.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `user_id` | String (ref: users) | Paying user |
+| `plan_id` | String (ref: plans) | Associated plan |
+| `plan_name` | String | Denormalized plan name |
+| `amount` | Number | Amount charged |
+| `currency` | String | — |
+| `payment_status` | String | e.g. `"succeeded"` |
+| `payment_provider` | String | `"razorpay"` or `"stripe"` |
+| `payment_id` | String | Provider payment reference |
+| `invoice_url` | String | Invoice link (nullable) |
+| `subscription_id` | String (ref: subscriptions) | Linked subscription |
+| `is_recurring` | Boolean | Whether this was a recurring charge |
+| `is_parallel` | Boolean | Whether this ran in parallel (multi-plan) |
+| `renewal_date` | Date | The renewal date this payment covers |
+| `payment_date` | Date | When payment was processed |
+| `created_at` | Date | — |
+
+---
+
+### 5. `payment_logs`
+Low-level ledger for credit top-ups and payment events.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `user_id` | String (ref: users) | User |
+| `transaction_id` | String | Internal or provider transaction ID |
+| `amount_paid` | Number | Amount charged |
+| `currency` | String | — |
+| `credits_added` | Number | Credits granted in this transaction |
+| `status` | String | `"succeeded"`, etc. |
+| `type` | String | `"add"` or `"deduct"` |
+| `created_at` | Date | — |
+
+---
+
+### 6. `credits_log`
+Detailed audit trail of every credit deduction or addition per feature.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `user_id` | String (ref: users) | User |
+| `type` | String | `"deduction"` or `"addition"` |
+| `amount` | Number | Credits affected |
+| `feature` | String | Feature slug (e.g. `"find_leads"`, `"generic"`) |
+| `function_name` | String | Internal function that triggered the change |
+| `description` | String | Human-readable reason |
+| `balance_after` | Number | User's credit balance after this event |
+| `created_at` | Date | — |
+
+---
+
+### 7. `credits_on_features`
+Configuration table mapping features to their credit costs.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `feature` | String | Feature slug |
+| `display_name` | String | Human-readable name |
+| `credits_per_unit` | Number | Credits charged per unit |
+| `unit` | String | Unit description (e.g. `"per lead"`) |
+| `description` | String | Explanation |
+| `is_active` | Boolean | Whether this pricing is live |
+| `created_at` / `updated_at` | Date | — |
+
+**Current Pricing:**
+
+| Feature | Credits/Unit | Unit |
+|---|---|---|
+| `find_leads` | 7 | per lead |
+| `export_leads` | 5 | per export |
+
+---
+
+### 8. `clients`
+Leads/clients scraped or added by users (B2B lead management).
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `owner_id` | String (ref: users) | User who owns this lead |
+| `name` | String | Contact/business name |
+| `company` | String | Company name |
+| `phone` | String | Phone number |
+| `address` | String | Full address |
+| `website` | String | Website URL |
+| `has_website` | Boolean | Whether a website was found |
+| `category` | String | Business category (e.g. `"gym"`) |
+| `status` | String | CRM status: `"lead"`, `"contacted"`, etc. |
+| `rating` | Number | Google Maps rating |
+| `lat` / `lng` | Number | Coordinates |
+| `location` | Object | Structured location sub-document |
+| `source` | String | How this lead was found (e.g. `"google_maps"`) |
+| `tags` | Array | User-defined tags |
+| `notes` | String | Auto-generated or manual notes |
+| `social_links` | Object | Social media handles |
+| `created_at` / `updated_at` | Date | — |
+
+**Indexes:** `owner_id`, `source`, geospatial on `lat/lng`
+
+---
+
+### 9. `incoming_resumes`
+Stores uploaded resume files and their extracted structured data.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `user_id` | String (ref: users) | Uploader |
+| `raw_input` | String | Base64-encoded PDF |
+| `extracted_data` | Object | Parsed resume fields |
+| `created_at` / `updated_at` | Date | — |
+
+---
+
+### 10. `resume_content_schemas`
+Defines the expected structure/sections for different resume types.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | String | Schema slug (e.g. `"developer-cv-2026"`) |
+| `schema_id` | String | Same as `_id` |
+| `name` | String | Display name |
+| `description` | String | Intended use case |
+| `required_sections` | Array | Mandatory section keys |
+| `sections` | Object | Full section definitions |
+| `version` | Number | Schema version |
+| `created_at` / `updated_at` | Date | — |
+
+**Available Schemas:**
+
+| Schema ID | Name | Use Case |
+|---|---|---|
+| `standard-cv-2026` | Standard Professional CV | General / software engineers |
+| `developer-cv-2026` | Developer CV Schema | Software developers with projects |
+
+---
+
+### 11. `job_lists`
+A job search session — groups a set of listed jobs from one search query.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `user_id` | String (ref: users) | Searching user |
+| `resume_id` | String (ref: incoming_resumes) | Resume used for matching |
+| `search_term` | String | Job title searched (e.g. `"Frontend Engineer"`) |
+| `location` | String | Search location |
+| `total_jobs` | Number | Number of jobs returned |
+| `created_at` | Date | — |
+
+---
+
+### 12. `listed_jobs`
+Individual job listings within a job search session, with AI fit analysis.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `list_id` | String (ref: job_lists) | Parent search session |
+| `user_id` | String (ref: users) | — |
+| `resume_id` | String (ref: incoming_resumes) | — |
+| `site` | String | Source site (e.g. `"indeed"`) |
+| `title` | String | Job title |
+| `company` | String | Company name |
+| `location` | String | Job location |
+| `experience` | String | Required experience |
+| `salary` | String | Salary info |
+| `job_type` | String | `"fulltime"`, `"contract"`, etc. |
+| `is_remote` | Boolean | Remote-friendly |
+| `job_url` | String | Original listing URL |
+| `date_posted` | String | Posting date |
+| `description` | String | Full job description |
+| `description_summary` | String | AI-generated summary |
+| `fit_score` | Number | AI-calculated match score (0–100) |
+| `best_role_label` | String | Best matching role label |
+| `matched_keywords` | Array | Keywords found in resume |
+| `missing_keywords` | Array | Keywords absent from resume |
+| `reasoning` | String | AI explanation of the fit score |
+| `risk_flags` | Array | Potential red flags |
+| `created_at` | Date | — |
+
+---
+
+### 13. `coupons`
+Discount coupon definitions. *(Currently empty — reserved for future use.)*
+
+---
+
+## Entity Relationship Summary
+
+```
+users
+ ├── subscriptions        (1:many, via user_id)
+ ├── billing_history      (1:many, via user_id)
+ ├── payment_logs         (1:many, via user_id)
+ ├── credits_log          (1:many, via user_id)
+ ├── clients              (1:many, via owner_id)
+ ├── incoming_resumes     (1:many, via user_id)
+ │    └── job_lists       (1:many, via resume_id)
+ │         └── listed_jobs (1:many, via list_id)
+ └── (credits balance stored inline on users document)
+
+plans
+ └── subscriptions        (1:many, via plan_id)
+
+credits_on_features
+ └── credits_log          (logical reference via feature slug)
+
+resume_content_schemas
+ └── incoming_resumes     (logical reference, schema used during extraction)
+```
+
+---
+
+## Notes
+
+- All monetary amounts are in **INR** by default; `currency` field allows multi-currency expansion.
+- **Credits** are the platform's internal currency — deducted per feature use, added via plan purchase.
+- The `billing_history` collection is append-only and should never be mutated after creation.
+- `razorpay_*` fields are the primary payment integration; `stripe_*` fields exist for future expansion.
+- Resume `raw_input` stores the full base64 PDF — consider moving to object storage (S3/GCS) for scale.

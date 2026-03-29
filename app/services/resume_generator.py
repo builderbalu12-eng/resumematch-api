@@ -2,7 +2,10 @@
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from io import BytesIO
-from weasyprint import HTML
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.pagesizes import A4
+
 from app.models.resume.template import TemplateOut  # your real model
 from datetime import datetime
 import json
@@ -185,7 +188,10 @@ class ResumeGenerator:
 
         # Generate PDF
         pdf_buffer = BytesIO()
-        HTML(string=html).write_pdf(pdf_buffer)
+        doc = SimpleDocTemplate(pdf_buffer, pagesize=A4)
+        styles = getSampleStyleSheet()
+        story = [Paragraph(html, styles["Normal"])]
+        doc.build(story)
         pdf_buffer.seek(0)
 
         # Filename
