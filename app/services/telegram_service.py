@@ -1,7 +1,11 @@
+from typing import Any, Dict, List, Optional
+
 import httpx
 from app.config import settings
 
 TELEGRAM_API = f"https://api.telegram.org/bot{settings.telegram_bot_token}"
+
+TELEGRAM_MAX_MESSAGE_LEN = 4096
 
 
 class TelegramService:
@@ -12,22 +16,46 @@ class TelegramService:
         chat_id:    str,
         text:       str,
         parse_mode: str = "HTML",
+        reply_markup: Optional[Dict[str, Any]] = None,
     ) -> bool:
         try:
+            payload: Dict[str, Any] = {
+                "chat_id":    chat_id,
+                "text":       text,
+                "parse_mode": parse_mode,
+            }
+            if reply_markup is not None:
+                payload["reply_markup"] = reply_markup
+
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
                     f"{TELEGRAM_API}/sendMessage",
-                    json={
-                        "chat_id":    chat_id,
-                        "text":       text,
-                        "parse_mode": parse_mode,
-                    },
+                    json=payload,
                     timeout=10,
                 )
             return resp.status_code == 200
         except Exception as e:
             print(f"[Telegram] send_message failed: {e}")
             return False
+
+    async def send_html_chunks(
+        self,
+        chat_id: str,
+        parts: List[str],
+        parse_mode: str = "HTML",
+    ) -> None:
+        for chunk in parts:
+            if not chunk:
+                continue
+            if len(chunk) > TELEGRAM_MAX_MESSAGE_LEN:
+                for i in range(0, len(chunk), TELEGRAM_MAX_MESSAGE_LEN - 200):
+                    await self.send_message(
+                        chat_id,
+                        chunk[i : i + TELEGRAM_MAX_MESSAGE_LEN - 200],
+                        parse_mode=parse_mode,
+                    )
+            else:
+                await self.send_message(chat_id, chunk, parse_mode=parse_mode)
 
     # ── Send QR code image ─────────────────────────────
     async def send_photo_bytes(

@@ -4,6 +4,7 @@ import secrets
 import qrcode
 import io
 import asyncio
+from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from bson import ObjectId
@@ -11,6 +12,7 @@ from bson import ObjectId
 from app.services.mongo import mongo
 from app.services.telegram_service import telegram_service
 from app.models.telegram.schemas import TelegramWebhookPayload
+from app.services.telegram.message_builder import message_builder
 from app.controllers.telegram.help import handle_help
 from app.controllers.telegram.account import handle_credits, handle_status
 from app.controllers.telegram.leads import (
@@ -86,6 +88,12 @@ class TelegramController:
                 "telegram_link_token": None,
             }}
         )
+        uid = str(user_id)
+        await mongo.telegram_conversations.delete_many({"user_id": uid})
+        await mongo.job_alert_subscriptions.update_many(
+            {"user_id": uid},
+            {"$set": {"is_active": False, "updated_at": datetime.now(timezone.utc)}},
+        )
         return {"success": True, "message": "Telegram disconnected successfully"}
 
     # ── Webhook — main router ─────────────────────────
@@ -107,36 +115,55 @@ class TelegramController:
         return {"ok": True}
 
     async def _process_command(self, chat_id: str, text: str, name: str):
-        cmd = text.split()[0].lower()
+        from app.controllers.telegram.jobs_flow import (
+            handle_cancel,
+            handle_findjobs_command,
+            handle_menu_or_conversation,
+            handle_my_alerts,
+            handle_stop_alerts,
+        )
 
-        if cmd == "/start":
-            await self._handle_start(chat_id, text, name)
+        if text.startswith("/"):
+            parts = text.split(maxsplit=1)
+            cmd = parts[0].lower()
+            rest = parts[1] if len(parts) > 1 else ""
 
-        elif cmd == "/help":
-            await handle_help(chat_id)
+            if cmd == "/start":
+                await self._handle_start(chat_id, text, name)
+            elif cmd == "/help":
+                await handle_help(chat_id)
+            elif cmd == "/cancel":
+                await handle_cancel(chat_id)
+            elif cmd == "/findjobs":
+                await handle_findjobs_command(chat_id, rest)
+            elif cmd == "/stopalerts":
+                await handle_stop_alerts(chat_id)
+            elif cmd == "/myalerts":
+                await handle_my_alerts(chat_id)
+            elif cmd == "/credits":
+                await handle_credits(chat_id)
+            elif cmd == "/status":
+                await handle_status(chat_id)
+            elif cmd == "/findleads":
+                await handle_find_leads(chat_id, text)
+            elif cmd == "/myleads":
+                await handle_my_leads(chat_id, text)
+            elif cmd == "/listallcities":
+                await handle_list_cities(chat_id)
+            elif cmd == "/listallcategories":
+                await handle_list_categories(chat_id)
+            else:
+                await telegram_service.send_message(
+                    chat_id,
+                    "❓ Unknown command. Type /help to see all commands.",
+                )
+            return
 
-        elif cmd == "/credits":
-            await handle_credits(chat_id)
-
-        elif cmd == "/status":
-            await handle_status(chat_id)
-
-        elif cmd == "/findleads":
-            await handle_find_leads(chat_id, text)
-
-        elif cmd == "/myleads":
-            await handle_my_leads(chat_id, text)
-
-        elif cmd == "/listallcities":
-            await handle_list_cities(chat_id)
-
-        elif cmd == "/listallcategories":
-            await handle_list_categories(chat_id)
-
-        else:
+        handled = await handle_menu_or_conversation(chat_id, text, name)
+        if not handled:
             await telegram_service.send_message(
                 chat_id,
-                "❓ Unknown command. Type /help to see all commands."
+                "Use the menu buttons below or type /help.",
             )
 
     # ── /start <token> ────────────────────────────────
@@ -157,7 +184,8 @@ class TelegramController:
                 await telegram_service.send_message(
                     chat_id,
                     f"✅ <b>Hey {name}! Account linked!</b>\n\n"
-                    f"Type /help to see everything you can do 🚀"
+                    f"Use the buttons below or /help.",
+                    reply_markup=message_builder.main_menu_reply_keyboard(),
                 )
             else:
                 await telegram_service.send_message(
@@ -166,16 +194,27 @@ class TelegramController:
                     "Go back to the app → Connect Telegram → get a fresh link."
                 )
         else:
-            await telegram_service.send_message(
-                chat_id,
-                f"👋 <b>Hey {name}!</b>\n\n"
-                f"To connect your account:\n"
-                f"1. Open the app\n"
-                f"2. Go to Profile\n"
-                f"3. Click <b>Connect Telegram</b>\n"
-                f"4. Scan QR or click the link\n\n"
-                f"Then type /help to see all commands! 🎯"
+            user = await mongo.users.find_one(
+                {"telegram_chat_id": chat_id, "telegram_linked": True}
             )
+            if user:
+                await telegram_service.send_message(
+                    chat_id,
+                    f"👋 <b>Hey {name}!</b>\n\n"
+                    f"You're connected. Use the buttons below or /help.",
+                    reply_markup=message_builder.main_menu_reply_keyboard(),
+                )
+            else:
+                await telegram_service.send_message(
+                    chat_id,
+                    f"👋 <b>Hey {name}!</b>\n\n"
+                    f"To connect your account:\n"
+                    f"1. Open the app\n"
+                    f"2. Go to Profile\n"
+                    f"3. Click <b>Connect Telegram</b>\n"
+                    f"4. Scan QR or click the link\n\n"
+                    f"Then type /help to see all commands! 🎯",
+                )
 
     # ── QR generator ──────────────────────────────────
     def _generate_qr_bytes(self, data: str) -> bytes:

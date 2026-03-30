@@ -288,6 +288,38 @@ Discount coupon definitions. *(Currently empty — reserved for future use.)*
 
 ---
 
+### 14. `telegram_conversations`
+Short-lived FSM state for Telegram multi-step flows (Find Jobs, Daily Alerts).
+
+| Field | Type | Description |
+|---|---|---|
+| `chat_id` | String | Telegram chat (unique) |
+| `user_id` | String | `users._id` as string |
+| `flow` | String | `find_jobs` or `daily_alerts` |
+| `step` | String | e.g. `title`, `location`, `time` |
+| `draft` | Object | In-progress answers |
+| `updated_at` | Date | TTL ~7 days |
+
+---
+
+### 15. `job_alert_subscriptions`
+One row per user (upsert on `user_id`): daily job digest preferences for the Telegram worker.
+
+| Field | Type | Description |
+|---|---|---|
+| `user_id` | String | Unique; ref `users` |
+| `chat_id` | String | Telegram chat to message |
+| `search_term` | String | Job title query |
+| `location` | String | Location query |
+| `alert_hour` / `alert_minute` | Number | Local time in `timezone` |
+| `timezone` | String | IANA zone (default from settings) |
+| `is_active` | Boolean | Worker skips if false |
+| `next_run_at` | Date | UTC; due when `<= now` |
+| `last_sent_at` | Date | Last successful dispatch |
+| `created_at` / `updated_at` | Date | — |
+
+---
+
 ## Entity Relationship Summary
 
 ```

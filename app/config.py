@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     telegram_bot_token:    str = ""
     telegram_bot_username: str = ""
 
+    # ── Telegram job discovery / alerts ─────────────────────────
+    telegram_job_search_top_n: int = 8
+    telegram_alert_default_timezone: str = "Asia/Kolkata"
+    telegram_job_alert_poll_seconds: int = 60
+
     # ── Computed / helper properties ─────────────────────────────
     @property
     def resume_admin_emails(self) -> Set[str]:

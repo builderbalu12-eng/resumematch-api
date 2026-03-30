@@ -30,6 +30,21 @@ class MongoService:
             await self.db.credits_on_features.create_index("feature", unique=True)
             print("✅ Credits indexes created")
 
+            # ── Telegram bot: conversation state + job alerts ─────
+            await self.db.telegram_conversations.create_index(
+                [("chat_id", 1)], unique=True
+            )
+            await self.db.telegram_conversations.create_index(
+                [("updated_at", 1)], expireAfterSeconds=7 * 24 * 3600
+            )
+            await self.db.job_alert_subscriptions.create_index(
+                [("user_id", 1)], unique=True
+            )
+            await self.db.job_alert_subscriptions.create_index(
+                [("is_active", 1), ("next_run_at", 1)]
+            )
+            print("✅ Telegram bot indexes created")
+
         except Exception as e:
             print(f"MongoDB connection failed: {str(e)}")
             raise
@@ -113,6 +128,14 @@ class MongoService:
     @property
     def credits_log(self):                    # ✅ added
         return self.db.credits_log
+
+    @property
+    def telegram_conversations(self):
+        return self.db.telegram_conversations
+
+    @property
+    def job_alert_subscriptions(self):
+        return self.db.job_alert_subscriptions
 
 
 mongo = MongoService()
