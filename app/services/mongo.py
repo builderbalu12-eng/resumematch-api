@@ -45,6 +45,11 @@ class MongoService:
             )
             print("✅ Telegram bot indexes created")
 
+            # ── Chat sessions ─────────────────────────────
+            await self.db.chat_sessions.create_index([("user_id", 1), ("session_id", 1)])
+            await self.db.chat_sessions.create_index([("user_id", 1), ("updated_at", -1)])
+            print("✅ Chat sessions indexes created")
+
         except Exception as e:
             print(f"MongoDB connection failed: {str(e)}")
             raise
@@ -136,6 +141,10 @@ class MongoService:
     @property
     def job_alert_subscriptions(self):
         return self.db.job_alert_subscriptions
+
+    @property
+    def chat_sessions(self):
+        return self.db.chat_sessions
 
 
 mongo = MongoService()

@@ -8,6 +8,7 @@ from app.routers import payment_routes
 from app.routers import openclaw_routes
 from app.routers import job_routes
 from app.routers import telegram_routes
+from app.routers import chat_routes
 from app.services.mongo import mongo
 from app.routers import client_routes  # ✅ ADD
 
@@ -52,6 +53,7 @@ app.include_router(payment_routes.router, prefix="/api")
 app.include_router(openclaw_routes.router, prefix="/api")
 app.include_router(telegram_routes.router, prefix="/api")
 app.include_router(job_routes.router, prefix="/api")
+app.include_router(chat_routes.router, prefix="/api")
 app.include_router(client_routes.router, prefix="/api")  # ✅ ADD
 
 
