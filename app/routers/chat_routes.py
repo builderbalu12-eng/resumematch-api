@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.controllers.chat.chat_controller import chat_controller
 from app.models.chat.schemas import SendMessageRequest
 from app.middleware.auth import get_current_user
+from app.services.credits_service import CreditsService
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -19,6 +20,13 @@ async def send_message(
     - If session_id is None, creates new session automatically
     """
     try:
+        # Deduct credits before processing
+        cost = await CreditsService.get_feature_cost("ai_chat")
+        if cost > 0:
+            success, msg = await CreditsService.deduct_credits(current_user, amount=cost, feature="ai_chat")
+            if not success:
+                raise HTTPException(status_code=403, detail=msg)
+
         # Create new session if none provided
         if not request.session_id:
             session_result = await chat_controller.new_session(current_user)
@@ -112,6 +120,22 @@ async def delete_session(
         
         return result
         
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.delete("/sessions/empty")
+async def cleanup_empty_sessions(
+    current_user: str = Depends(get_current_user)
+):
+    """Delete all sessions with no messages."""
+    try:
+        result = await chat_controller.cleanup_empty_sessions(current_user)
+        if not result["success"]:
+            raise HTTPException(status_code=500, detail=result["message"])
+        return result
     except HTTPException:
         raise
     except Exception as e:

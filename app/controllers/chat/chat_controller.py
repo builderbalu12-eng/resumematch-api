@@ -34,20 +34,24 @@ class ChatController:
             # Process message with AI
             ai_result = await ai_chat_service.process_message(user_id, message, session_history)
             
-            # Save assistant response
+            # Save assistant response (including action data so history restores cards)
             await session_service.save_message(
-                user_id, 
-                session_id, 
-                "assistant", 
-                ai_result["response"], 
-                ai_result["intent"]
+                user_id,
+                session_id,
+                "assistant",
+                ai_result["response"],
+                ai_result["intent"],
+                action_type=ai_result.get("action_type"),
+                action_data=ai_result.get("action_data"),
             )
             
             # Format response
             response = ChatResponse(
                 session_id=session_id,
                 message=ai_result["response"],
-                intent=ai_result["intent"]
+                intent=ai_result["intent"],
+                action_type=ai_result.get("action_type"),
+                action_data=ai_result.get("action_data"),
             )
             
             return {
@@ -176,6 +180,14 @@ class ChatController:
                 "data": None
             }
     
+    @staticmethod
+    async def cleanup_empty_sessions(user_id: str) -> Dict[str, Any]:
+        try:
+            deleted = await session_service.cleanup_empty_sessions(user_id)
+            return {"status": "success", "success": True, "message": f"Deleted {deleted} empty sessions", "data": {"deleted": deleted}}
+        except Exception as e:
+            return {"status": "error", "success": False, "message": str(e), "data": None}
+
     @staticmethod
     async def get_all_sessions(user_id: str) -> Dict[str, Any]:
         """

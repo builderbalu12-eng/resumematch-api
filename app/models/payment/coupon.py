@@ -5,7 +5,7 @@ from datetime import datetime
 
 class CouponCreate(BaseModel):
     code: str = Field(..., min_length=3, max_length=20)
-    coupon_type: str = Field("individual", pattern="^(individual|domain)$")  # backend auto-detects on validate
+    coupon_type: str = Field("individual", pattern="^(individual|domain|public)$")
     applicable_to_user_id: Optional[str] = None        # for individual coupon
     applicable_to_domains: Optional[List[str]] = None  # for domain coupon e.g. ["university.edu"]
     discount_percent: Optional[float] = Field(None, ge=0, le=100)

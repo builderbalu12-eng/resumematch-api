@@ -17,3 +17,6 @@ venv/
 .vscode/
 .idea/
 .vercel
+
+# Credentials
+google-analytics-credentials.json

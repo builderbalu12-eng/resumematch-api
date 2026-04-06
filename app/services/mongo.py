@@ -146,5 +146,13 @@ class MongoService:
     def chat_sessions(self):
         return self.db.chat_sessions
 
+    @property
+    def password_reset_tokens(self):
+        return self.db.password_reset_tokens
+
+    @property
+    def coupon_usage_log(self):
+        return self.db.coupon_usage_log
+
 
 mongo = MongoService()

@@ -35,6 +35,7 @@ class UserResponse(BaseModel):
     telegram_linked:  bool          = False
     telegram_chat_id: Optional[str] = None
     has_payments:     bool          = False    # ✅ added
+    is_admin:         bool          = False
 
     class Config:
         populate_by_name = True

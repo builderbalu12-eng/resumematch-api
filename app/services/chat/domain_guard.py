@@ -3,12 +3,23 @@ from typing import List
 
 
 ALLOWED_KEYWORDS: List[str] = [
+    # Core domain terms
     "job", "resume", "career", "skill", "salary", "interview",
-    "hiring", "recruiter", "work", "internship", "freelance",
+    "hiring", "recruiter", "work", "internship", "freelance", "freelancing",
     "lead", "client", "linkedin", "naukri", "company", "role",
     "apply", "placement", "hr", "employment", "profession",
     "vacancy", "opening", "position", "occupation", "workplace",
-    "business", "customer", "prospect", "sales"
+    "business", "customer", "prospect", "sales",
+    "earn", "earning", "income", "rate", "charge", "fee",
+    "contract", "project", "portfolio", "profile",
+    "startup", "entrepreneur", "self-employed",
+    "payment", "invoice", "gig", "remote", "hybrid",
+    "promotion", "appraisal", "raise", "growth",
+    "certification", "course", "learn", "upskill",
+    "network", "connection", "referral",
+    # Action verbs / request phrases — so "can you search jobs" isn't blocked
+    "search", "find", "look", "show", "get", "give", "help",
+    "suggest", "recommend", "tell", "list", "need", "want",
 ]
 
 

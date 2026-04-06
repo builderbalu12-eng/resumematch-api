@@ -48,6 +48,15 @@ class Settings(BaseSettings):
 
     # ── Resume feature specifics ─────────────────────────────────
     resume_template_admins: str = ""   # comma-separated emails
+    admin_emails: str = ""             # comma-separated, for admin dashboard
+
+    # ── SMTP / Email ─────────────────────────────────────────────
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
+    smtp_from_name: str = "ResumeMatch"
 
     # ── Razorpay / Payments ──────────────────────────────────────
     razorpay_key_id: str
@@ -71,6 +80,13 @@ class Settings(BaseSettings):
     telegram_job_alert_poll_seconds: int = 60
 
     # ── Computed / helper properties ─────────────────────────────
+    @property
+    def admin_email_set(self) -> Set[str]:
+        """Returns set of dashboard admin emails (normalized lowercase)"""
+        if not self.admin_emails:
+            return set()
+        return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
+
     @property
     def resume_admin_emails(self) -> Set[str]:
         """Returns set of admin emails (normalized lowercase)"""

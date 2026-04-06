@@ -78,6 +78,15 @@ class SubscriptionController:
                 {"_id": coupon["_id"]},
                 {"$inc": {"uses_count": 1}}
             )
+            await mongo.coupon_usage_log.insert_one({
+                "coupon_id":        coupon_id,
+                "coupon_code":      coupon["code"],
+                "user_id":          current_user,
+                "plan_id":          data.plan_id,
+                "discount_applied": discount,
+                "payment_type":     "subscription",
+                "created_at":       datetime.utcnow(),
+            })
 
         # 3. Calculate renewal date
         if data.billing_cycle == "yearly":

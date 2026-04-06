@@ -1,10 +1,20 @@
 from fastapi import APIRouter, Query
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, EmailStr
 from app.models.user import UserCreate, LoginRequest
 from app.controllers.auth_controller import AuthController, AuthResponse
 from app.controllers.google_auth_controller import GoogleAuthController
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
 
 
 @router.post("/register", response_model=AuthResponse)
@@ -14,8 +24,17 @@ async def register(user: UserCreate):
 
 @router.post("/login", response_model=AuthResponse)
 async def login(login_data: LoginRequest):
-    # Pass the entire model (not separate args)
     return await AuthController.login(login_data)
+
+
+@router.post("/forgot-password")
+async def forgot_password(body: ForgotPasswordRequest):
+    return await AuthController.forgot_password(body.email)
+
+
+@router.post("/reset-password")
+async def reset_password(body: ResetPasswordRequest):
+    return await AuthController.reset_password(body.token, body.new_password)
 
 
 @router.get("/google/url")

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.middleware.auth import get_current_user
 from typing import Dict, List, Optional
+from app.services.credits_service import CreditsService
 from app.controllers.resume_controller import ResumeController
 from app.models.resume.template import TemplateCreate, TemplateOut
 from app.models.resume.user_resume import UserResumeCreate, UserResumeOut
@@ -73,6 +74,11 @@ async def create_resume(
     data: UserResumeCreate,
     current_user: str = Depends(get_current_user)
 ):
+    cost = await CreditsService.get_feature_cost("create_resume")
+    if cost > 0:
+        success, msg = await CreditsService.deduct_credits(current_user, amount=cost, feature="create_resume")
+        if not success:
+            raise HTTPException(status_code=403, detail=msg)
     return await ResumeController.create_user_resume(current_user, data)
 
 
@@ -163,6 +169,11 @@ async def create_resume(
     data: UserResumeCreate,
     current_user: str = Depends(get_current_user)
 ):
+    cost = await CreditsService.get_feature_cost("create_resume")
+    if cost > 0:
+        success, msg = await CreditsService.deduct_credits(current_user, amount=cost, feature="create_resume")
+        if not success:
+            raise HTTPException(status_code=403, detail=msg)
     return await ResumeController.create_user_resume(current_user, data)
 
 

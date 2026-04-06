@@ -72,6 +72,15 @@ class PaymentController:
                 {"_id": coupon["_id"]},
                 {"$inc": {"uses_count": 1}}
             )
+            await mongo.coupon_usage_log.insert_one({
+                "coupon_id":        coupon_id,
+                "coupon_code":      coupon["code"],
+                "user_id":          current_user,
+                "plan_id":          data.plan_id,
+                "discount_applied": plan["amount"] - amount,
+                "payment_type":     "order",
+                "created_at":       datetime.utcnow(),
+            })
 
         # 3. Create Razorpay order
         order = razorpay_service.create_order(

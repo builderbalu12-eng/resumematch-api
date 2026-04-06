@@ -231,26 +231,53 @@ Job Description:
 
 
 def tailor_resume(resume: str, job_description: str) -> Dict:
-    prompt = f"""Rewrite and optimize this resume to better match the job description.
-Emphasize relevant experience, reorder sections/skills if needed, incorporate keywords naturally.
-Keep the original facts — do not invent experience.
-Use professional formatting (plain text with markdown-like headings and bullets is acceptable).
+    prompt = f"""You are an expert ATS optimization specialist and professional resume writer.
+Your sole goal is to rewrite the resume to achieve the MAXIMUM possible ATS score against the given job description.
 
-Return **only valid JSON** with these exact keys:
+## Step 1 — Extract ALL keywords from the job description
+Identify every required skill, tool, technology, certification, and key phrase.
+Pay attention to exact terminology (e.g. "cross-functional collaboration", "CI/CD pipelines", "agile methodology").
 
+## Step 2 — Rewrite the resume
+- Incorporate EVERY required keyword and skill from Step 1 naturally into the resume
+- Mirror the exact phrasing from the job description throughout — ATS systems match exact strings
+- Place most relevant experience and skills first (reorder sections if needed)
+- Quantify all achievements using numbers already present in the original (do not fabricate)
+- Use standard ATS-safe section headers: SUMMARY, EXPERIENCE, SKILLS, EDUCATION, CERTIFICATIONS
+- Add a dedicated SKILLS section listing all matched keywords if not already present
+- NEVER use tables, columns, text boxes, or graphics — ATS parsers cannot read these
+- Keep all original facts — do not invent experience, credentials, or employers
+
+## Step 3 — Score
+Count how many required keywords from Step 1 are naturally present in the rewritten resume.
+Estimate a realistic ATS compatibility score from 0 to 100.
+
+Return ONLY valid JSON with these exact keys:
 {{
-  "tailoredResume": full plain-text resume content,
-  "optimizationNotes": array of strings explaining main changes (3-8 items),
-  "estimatedATSScore": number 0-100
+  "tailoredResume": "full optimized resume in plain text",
+  "optimizationNotes": ["string", "string", ...],
+  "estimatedATSScore": number
 }}
 
 Original Resume:
 {resume}
 
-Target Job Description:
+Job Description:
 {job_description}
 """
-    return call_gemini(prompt, temperature=0.3)
+    result = call_gemini(prompt, temperature=0.0)
+
+    # Cross-validate with the independent ATS scorer so the score is objective
+    try:
+        ats_result = calculate_ats_score(result.get("tailoredResume", ""), job_description)
+        if ats_result.get("atsScore") is not None:
+            result["estimatedATSScore"] = ats_result["atsScore"]
+        if ats_result.get("scoreBreakdown"):
+            result["scoreBreakdown"] = ats_result["scoreBreakdown"]
+    except Exception:
+        pass  # keep Gemini's self-reported score as fallback
+
+    return result
 
 
 def calculate_ats_score(resume: str, job_description: str) -> Dict:

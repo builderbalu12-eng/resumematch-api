@@ -1,7 +1,8 @@
 # app/controllers/gemini_resume_controller.py
 """
 Controller layer for Gemini-powered resume & job endpoints.
-Credits are deducted ONLY after successful processing.
+Credits are deducted BEFORE processing and refunded if processing fails.
+Costs are DB-driven via credits_on_features collection.
 """
 
 import logging
@@ -35,174 +36,144 @@ async def process_analyze_resume(
     request: AnalyzeResumeRequest,
     current_user: str
 ) -> AnalyzeResumeResponse:
+    cost = await CreditsService.get_feature_cost("analyze_resume")
+    success, message = await CreditsService.deduct_credits(current_user, amount=cost, feature="analyze_resume")
+    if not success:
+        raise HTTPException(403, message or "Insufficient credits")
+
     try:
         result = analyze_resume_match(request.resume, request.jobDescription)
-        result["creditsUsed"] = 1
-
-        success, message = await CreditsService.deduct_credits(current_user, amount=1)
-        if not success:
-            raise HTTPException(403, message or "Credits deduction failed")
-
+        result["creditsUsed"] = cost
         return AnalyzeResumeResponse(**result)
-
-    except Exception as e:
+    except Exception:
+        await CreditsService.refund_credits(current_user, cost, "Analyze resume failed")
         logger.exception("Analyze resume failed")
-        raise HTTPException(500, f"Processing failed: {str(e)}")
+        raise HTTPException(500, "Processing failed")
+
 
 async def process_extract_resume(
     request: ExtractResumeRequest,
     current_user: str
 ) -> ExtractResumeResponse:
+    cost = await CreditsService.get_feature_cost("extract_resume")
+    success, message = await CreditsService.deduct_credits(current_user, amount=cost, feature="extract_resume")
+    if not success:
+        raise HTTPException(403, message or "Insufficient credits")
+
     try:
-        # Run Gemini extraction
         result = extract_resume_from_text(request.documentText)
 
-        # Handle possible error dict from call_gemini
         if "error" in result:
+            await CreditsService.refund_credits(current_user, cost, "Resume extraction returned error")
             raise ValueError(result.get("message", "Gemini processing failed"))
 
-        # Auto-save to MongoDB (overwrite if exists)
         await IncomingResumeService.save_or_update(
             user_id=current_user,
-            raw_input=request.documentText,    # save original input (base64 or text)
-            extracted_data=result              # save whatever Gemini returned
+            raw_input=request.documentText,
+            extracted_data=result
         )
 
-        # Deduct credits ONLY after successful extraction + save
-        success, message = await CreditsService.deduct_credits(current_user, amount=2)
-        if not success:
-            raise HTTPException(403, message or "Credits deduction failed after processing")
-
-        result["creditsUsed"] = 2
+        result["creditsUsed"] = cost
         return ExtractResumeResponse(**result)
 
     except ValueError as ve:
-        # Bad extraction result (empty/invalid) → user error, no deduction
         raise HTTPException(400, str(ve))
-    except Exception as e:
+    except Exception:
+        await CreditsService.refund_credits(current_user, cost, "Extract resume failed")
         logger.exception("Extract resume failed")
-        # No deduction happened → credits safe
-        raise HTTPException(500, f"Extraction failed: {str(e)}")
+        raise HTTPException(500, "Extraction failed")
+
 
 async def process_tailor_resume(
     request: TailorResumeRequest,
     current_user: str
 ) -> TailorResumeResponse:
+    cost = await CreditsService.get_feature_cost("tailor_resume")
+    success, message = await CreditsService.deduct_credits(current_user, amount=cost, feature="tailor_resume")
+    if not success:
+        raise HTTPException(403, message or "Insufficient credits")
+
     try:
         result = tailor_resume(request.resume, request.jobDescription)
-        result["creditsUsed"] = 2
-
-        success, message = await CreditsService.deduct_credits(current_user, amount=2)
-        if not success:
-            raise HTTPException(403, message or "Credits deduction failed")
-
+        result["creditsUsed"] = cost
         return TailorResumeResponse(**result)
-
-    except Exception as e:
+    except Exception:
+        await CreditsService.refund_credits(current_user, cost, "Tailor resume failed")
         logger.exception("Tailor resume failed")
-        raise HTTPException(500, f"Tailoring failed: {str(e)}")
+        raise HTTPException(500, "Tailoring failed")
 
 
 async def process_ats_score(
     request: AtsScoreRequest,
     current_user: str
 ) -> AtsScoreResponse:
+    cost = await CreditsService.get_feature_cost("ats_score")
+    success, message = await CreditsService.deduct_credits(current_user, amount=cost, feature="ats_score")
+    if not success:
+        raise HTTPException(403, message or "Insufficient credits")
+
     try:
         result = calculate_ats_score(request.resume, request.jobDescription)
-        result["creditsUsed"] = 1
-
-        success, message = await CreditsService.deduct_credits(current_user, amount=1)
-        if not success:
-            raise HTTPException(403, message or "Credits deduction failed")
-
+        result["creditsUsed"] = cost
         return AtsScoreResponse(**result)
-
-    except Exception as e:
+    except Exception:
+        await CreditsService.refund_credits(current_user, cost, "ATS score failed")
         logger.exception("ATS score failed")
-        raise HTTPException(500, f"ATS calculation failed: {str(e)}")
+        raise HTTPException(500, "ATS calculation failed")
 
 
 async def process_parse_job(
     request: ParseJobRequest,
     current_user: str
 ) -> ParseJobResponse:
+    cost = await CreditsService.get_feature_cost("parse_job")
+    success, message = await CreditsService.deduct_credits(current_user, amount=cost, feature="parse_job")
+    if not success:
+        raise HTTPException(403, message or "Insufficient credits")
+
     try:
         result = parse_job_description(request.jobDescription)
-        result["creditsUsed"] = 1
-
-        success, message = await CreditsService.deduct_credits(current_user, amount=1)
-        if not success:
-            raise HTTPException(403, message or "Credits deduction failed")
-
+        result["creditsUsed"] = cost
         return ParseJobResponse(**result)
-
-    except Exception as e:
+    except Exception:
+        await CreditsService.refund_credits(current_user, cost, "Parse job failed")
         logger.exception("Parse job failed")
-        raise HTTPException(500, f"Job parsing failed: {str(e)}")
+        raise HTTPException(500, "Job parsing failed")
 
 
 async def process_generate_cover_letter(
     request: GenerateCoverLetterRequest,
     current_user: str
 ) -> GenerateCoverLetterResponse:
+    cost = await CreditsService.get_feature_cost("cover_letter")
+    success, message = await CreditsService.deduct_credits(current_user, amount=cost, feature="cover_letter")
+    if not success:
+        raise HTTPException(403, message or "Insufficient credits")
+
     try:
         result = generate_cover_letter(request.resume, request.jobDescription)
-        result["creditsUsed"] = 3
-
-        success, message = await CreditsService.deduct_credits(current_user, amount=3)
-        if not success:
-            raise HTTPException(403, message or "Credits deduction failed")
-
+        result["creditsUsed"] = cost
         return GenerateCoverLetterResponse(**result)
-
-    except Exception as e:
+    except Exception:
+        await CreditsService.refund_credits(current_user, cost, "Cover letter generation failed")
         logger.exception("Cover letter generation failed")
-        raise HTTPException(500, f"Cover letter generation failed: {str(e)}")
+        raise HTTPException(500, "Cover letter generation failed")
 
 
 async def process_check_completeness(
     request: CheckCompletenessRequest,
     current_user: str
 ) -> CheckCompletenessResponse:
+    cost = await CreditsService.get_feature_cost("check_completeness")
+    success, message = await CreditsService.deduct_credits(current_user, amount=cost, feature="check_completeness")
+    if not success:
+        raise HTTPException(403, message or "Insufficient credits")
+
     try:
         result = check_resume_completeness(request.resume)
-        result["creditsUsed"] = 1
-
-        success, message = await CreditsService.deduct_credits(current_user, amount=1)
-        if not success:
-            raise HTTPException(403, message or "Credits deduction failed")
-
+        result["creditsUsed"] = cost
         return CheckCompletenessResponse(**result)
-
-    except Exception as e:
+    except Exception:
+        await CreditsService.refund_credits(current_user, cost, "Completeness check failed")
         logger.exception("Completeness check failed")
-        raise HTTPException(500, f"Completeness check failed: {str(e)}")
-
-
-
-# async def process_extract_resume(
-#     request: ExtractResumeRequest,
-#     current_user: str
-# ) -> ExtractResumeResponse:
-#     try:
-#         result = extract_resume_from_text(request.documentText)
-#         print("---- RAW INPUT START ----")
-#         print(result)
-#         print("---- RAW INPUT END ----")
-
-#         if "error" in result:
-#             raise ValueError(result["message"])
-
-#         result["creditsUsed"] = 2
-
-#         success, message = await CreditsService.deduct_credits(current_user, amount=2)
-#         if not success:
-#             raise HTTPException(403, message or "Deduction failed after success")
-
-#         return ExtractResumeResponse(**result)
-
-#     except Exception as e:
-#         # Refund if any deduction happened earlier (very rare)
-#         await CreditsService.refund_credits(current_user, amount=2, reason="Resume extraction failed")
-#         logger.exception("Extract resume failed")
-#         raise HTTPException(500, f"Extraction failed: {str(e)}")
+        raise HTTPException(500, "Completeness check failed")

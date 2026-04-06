@@ -9,6 +9,7 @@ from passlib.context import CryptContext
 from app.models.user import UserResponse, UserUpdate, ChangePasswordRequest
 from app.services.mongo import mongo
 from app.middleware.auth import get_current_user
+from app.config import settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -56,6 +57,8 @@ class UserController:
             user_doc["telegram_link_token"] = None
         if "has_payments" not in user_doc:
             user_doc["has_payments"] = False      # ✅ default
+        email = user_doc.get("email", "").strip().lower()
+        user_doc["is_admin"] = email in settings.admin_email_set
         return user_doc
 
     @staticmethod

@@ -8,12 +8,14 @@ from app.models.chat.schemas import ChatMessage, ChatSession
 class SessionService:
     
     async def save_message(
-        self, 
-        user_id: str, 
-        session_id: str, 
-        role: str, 
-        content: str, 
-        intent: Optional[str] = None
+        self,
+        user_id: str,
+        session_id: str,
+        role: str,
+        content: str,
+        intent: Optional[str] = None,
+        action_type: Optional[str] = None,
+        action_data: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Save a message to the chat session.
@@ -33,6 +35,8 @@ class SessionService:
                 role=role,
                 content=content,
                 intent=intent,
+                action_type=action_type,
+                action_data=action_data,
                 timestamp=datetime.utcnow()
             )
             
@@ -182,6 +186,17 @@ class SessionService:
             print(f"Error deleting session: {str(e)}")
             return False
     
+    async def cleanup_empty_sessions(self, user_id: str) -> int:
+        """Delete all sessions with no messages for a user."""
+        try:
+            result = await mongo.chat_sessions.delete_many(
+                {"user_id": user_id, "messages": {"$size": 0}}
+            )
+            return result.deleted_count
+        except Exception as e:
+            print(f"Error cleaning up empty sessions: {str(e)}")
+            return 0
+
     async def get_session(self, user_id: str, session_id: str) -> Optional[Dict[str, Any]]:
         """
         Get a specific session.

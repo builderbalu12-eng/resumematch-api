@@ -1,6 +1,7 @@
 from fastapi import HTTPException, status
 from typing import Any, Optional
 
+from app.services.credits_service import CreditsService
 from app.models.job.listed_job import (
     JobRecommendRequest,
     JobRecommendResponse,
@@ -23,6 +24,13 @@ class JobController:
         user_id: str,
         payload: JobRecommendRequest,
     ) -> JobRecommendResponse:
+
+        # Step 0 — deduct credits before running job search
+        cost = await CreditsService.get_feature_cost("find_jobs")
+        if cost > 0:
+            success, msg = await CreditsService.deduct_credits(user_id, amount=cost, feature="find_jobs")
+            if not success:
+                raise HTTPException(status_code=403, detail=msg)
 
         # Step 1 — auto fetch resume_id from DB
         try:

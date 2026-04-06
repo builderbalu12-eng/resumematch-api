@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Request, HTTPException, Query, Body
 from typing import Dict, Optional
 from app.middleware.auth import get_current_user
+from app.dependencies.admin import require_admin
 from app.controllers.payment.plan_controller import PlanController
 from app.controllers.payment.subscription_controller import SubscriptionController
 from app.controllers.payment.coupon_controller import CouponController
@@ -139,7 +140,7 @@ async def verify_payment(
 @router.post("/coupons", response_model=Dict)
 async def create_coupon(
     data: CouponCreate,
-    current_user: str = Depends(get_current_user)
+    current_user: str = Depends(require_admin)
 ):
     return await CouponController.create_coupon(data, current_user)
 
@@ -166,7 +167,7 @@ async def get_coupon(
 async def update_coupon(
     coupon_id: str,
     data: CouponUpdate,
-    current_user: str = Depends(get_current_user)
+    current_user: str = Depends(require_admin)
 ):
     return await CouponController.update_coupon(coupon_id, data, current_user)
 
@@ -174,7 +175,7 @@ async def update_coupon(
 @router.delete("/coupons/{coupon_id}", response_model=Dict)
 async def delete_coupon(
     coupon_id: str,
-    current_user: str = Depends(get_current_user)
+    current_user: str = Depends(require_admin)
 ):
     return await CouponController.delete_coupon(coupon_id, current_user)
 

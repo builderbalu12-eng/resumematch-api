@@ -11,6 +11,7 @@ from app.routers import telegram_routes
 from app.routers import chat_routes
 from app.services.mongo import mongo
 from app.routers import client_routes  # ✅ ADD
+from app.routers import admin_routes
 
 
 app = FastAPI(
@@ -55,6 +56,7 @@ app.include_router(telegram_routes.router, prefix="/api")
 app.include_router(job_routes.router, prefix="/api")
 app.include_router(chat_routes.router, prefix="/api")
 app.include_router(client_routes.router, prefix="/api")  # ✅ ADD
+app.include_router(admin_routes.router, prefix="/api")
 
 
 

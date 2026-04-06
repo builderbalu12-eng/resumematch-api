@@ -1,9 +1,11 @@
+import secrets
 from fastapi import HTTPException
 from app.models.user import UserCreate, LoginRequest, UserResponse
 from app.services.mongo import mongo
+from app.services.email_service import send_email, _password_reset_html
 from app.config import settings
 from passlib.context import CryptContext
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from jose import jwt
 from pydantic import BaseModel
 from bson import ObjectId
@@ -99,3 +101,75 @@ class AuthController:
                 token_type="bearer"
             )
         )
+
+    @staticmethod
+    async def forgot_password(email: str) -> dict:
+        # Always return the same message — don't reveal if email exists
+        generic = {"status": 200, "success": True, "message": "If this email is registered, you'll receive a reset link shortly."}
+
+        user = await mongo.users.find_one({"email": email})
+        if not user:
+            return generic
+
+        # Only local-auth users have a password to reset
+        if user.get("auth_provider", "local") != "local":
+            return generic
+
+        # Invalidate any existing unused tokens for this email
+        await mongo.password_reset_tokens.update_many(
+            {"email": email, "used": False},
+            {"$set": {"used": True}}
+        )
+
+        token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+
+        await mongo.password_reset_tokens.insert_one({
+            "email": email,
+            "token": token,
+            "expires_at": expires_at,
+            "used": False,
+            "created_at": datetime.now(timezone.utc),
+        })
+
+        reset_link = f"{settings.frontend_base_url}/reset-password?token={token}"
+        try:
+            await send_email(
+                to_email=email,
+                subject="Reset your ResumeMatch password",
+                html_body=_password_reset_html(reset_link),
+            )
+        except Exception as e:
+            print(f"[forgot_password] Email send failed: {e}")
+            # Don't expose email errors to the client
+
+        return generic
+
+    @staticmethod
+    async def reset_password(token: str, new_password: str) -> dict:
+        if len(new_password) < 8:
+            raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+        print(f"[reset_password] Looking up token: {token[:20]}...")
+        record = await mongo.password_reset_tokens.find_one({"token": token, "used": False})
+        print(f"[reset_password] Record found: {record is not None}")
+        if not record:
+            # Check if token exists but is used/expired
+            any_record = await mongo.password_reset_tokens.find_one({"token": token})
+            print(f"[reset_password] Token exists (any status): {any_record is not None}, used={any_record.get('used') if any_record else 'N/A'}")
+            raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+
+        if record["expires_at"].replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="Reset link has expired. Please request a new one.")
+
+        hashed = pwd_context.hash(new_password)
+        await mongo.users.update_one(
+            {"email": record["email"]},
+            {"$set": {"password": hashed, "updated_at": datetime.now(timezone.utc)}}
+        )
+        await mongo.password_reset_tokens.update_one(
+            {"_id": record["_id"]},
+            {"$set": {"used": True}}
+        )
+
+        return {"status": 200, "success": True, "message": "Password reset successfully. You can now log in."}

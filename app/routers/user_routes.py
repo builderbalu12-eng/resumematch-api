@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Any, Dict
 
 from app.models.user import UserResponse, UserUpdate, ChangePasswordRequest
@@ -9,6 +9,7 @@ from app.controllers.user_controller import (
 )
 from app.services.credits_service import CreditsService
 from app.middleware.auth import get_current_user
+from app.services.mongo import mongo
 
 
 router = APIRouter(prefix="/user", tags=["User"])
@@ -92,6 +93,36 @@ async def get_credits(
 # GET /api/user/feature-cost/{feature}
 # e.g. GET /api/user/feature-cost/find_leads
 # ─────────────────────────────────────────────────────
+@router.get(
+    "/me/credits/history",
+    response_model=Dict,
+    summary="Get current user credits deduction history",
+)
+async def get_credits_history(
+    skip:  int = Query(0, ge=0),
+    limit: int = Query(30, ge=1, le=100),
+    current_user: Any = Depends(get_current_user),
+):
+    user_id = _extract_user_id(current_user)
+
+    features_list = await mongo.credits_on_features.find(
+        {}, {"feature": 1, "display_name": 1}
+    ).to_list(length=100)
+    display_name_map = {f["feature"]: f.get("display_name", f["feature"]) for f in features_list}
+
+    query = {"user_id": user_id, "feature": {"$ne": "generic"}}
+    logs = await mongo.credits_log.find(
+        query
+    ).sort("created_at", -1).skip(skip).limit(limit).to_list(length=limit)
+
+    for log in logs:
+        log.pop("_id", None)
+        log["display_name"] = display_name_map.get(log.get("feature", ""), log.get("feature", "Unknown"))
+
+    total = await mongo.credits_log.count_documents(query)
+    return {"status": 200, "success": True, "data": {"items": logs, "total": total}}
+
+
 @router.get(
     "/feature-cost/{feature}",
     response_model=Dict,

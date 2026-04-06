@@ -58,7 +58,8 @@ class CreditsService:
     @staticmethod
     async def deduct_credits(
         user_id: str,
-        amount:  float = 1.0
+        amount:  float = 1.0,
+        feature: str = "generic",
     ) -> Tuple[bool, str]:
         """
         Deduct credits when using a paid feature (Gemini / lead finder).
@@ -90,9 +91,9 @@ class CreditsService:
             "user_id":       user_id,
             "type":          "deduction",
             "amount":        amount,
-            "feature":       "generic",
+            "feature":       feature,
             "function_name": "deduct_credits",
-            "description":   "Generic credits deduction",
+            "description":   f"Credits deducted for {feature}",
             "balance_after": new_credits,
             "created_at":    datetime.utcnow(),
         })
