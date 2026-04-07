@@ -17,15 +17,14 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Global Gemini setup
+# Startup defaults — overridden immediately by init_gemini_config() in main.py
 genai.configure(api_key=settings.gemini_api_key)
 MODEL = settings.gemini_model
-GEN_MODEL = genai.GenerativeModel(MODEL)
 
 logger.info(f"Gemini model loaded: {MODEL}")
 
 # Safety limits
-MAX_INPUT_CHARS = 100000000000000000000000
+MAX_INPUT_CHARS = 100_000        # ~100k chars is ample for any resume/JD
 DEFAULT_MAX_OUTPUT_TOKENS = 8000
 
 
@@ -60,9 +59,19 @@ def call_gemini(
         logger.warning("Prompt truncated due to size limit")
         prompt = prompt[:MAX_INPUT_CHARS]
 
+    # Use the sync active config populated at startup (and refreshed on each admin save).
+    try:
+        from app.services.gemini_config_service import get_active_config_sync
+        cfg = get_active_config_sync()
+        genai.configure(api_key=cfg["api_key"])
+        active_model = model or cfg["model"]
+    except Exception as e:
+        logger.warning(f"Could not load live Gemini config, using .env defaults: {e}")
+        active_model = model or MODEL
+
     for attempt in range(2):  # retry once if JSON fails
         try:
-            gen_model = GEN_MODEL if model is None else genai.GenerativeModel(model)
+            gen_model = genai.GenerativeModel(active_model)
 
             response = gen_model.generate_content(
                 prompt,

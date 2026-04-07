@@ -110,13 +110,14 @@ class CreditsService:
                 {"_id": ObjectId(user_id)},
                 {"$set": {"credits": new, "updated_at": datetime.utcnow()}}
             )
-            await mongo.payment_logs.insert_one({
-                "user_id":          user_id,
-                "credits_refunded": amount,
-                "status":           "refunded",
-                "created_at":       datetime.utcnow(),
-                "type":             "refund",
-                "reason":           reason
+            await mongo.credits_log.insert_one({
+                "user_id":       user_id,
+                "type":          "refund",
+                "amount":        amount,
+                "feature":       "refund",
+                "description":   reason,
+                "balance_after": new,
+                "created_at":    datetime.utcnow(),
             })
 
     @staticmethod

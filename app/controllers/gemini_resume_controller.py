@@ -95,8 +95,13 @@ async def process_tailor_resume(
 
     try:
         result = tailor_resume(request.resume, request.jobDescription)
+        if "error" in result:
+            await CreditsService.refund_credits(current_user, cost, "Tailor resume: Gemini error")
+            raise HTTPException(503, "AI service temporarily unavailable. Credits refunded.")
         result["creditsUsed"] = cost
         return TailorResumeResponse(**result)
+    except HTTPException:
+        raise
     except Exception:
         await CreditsService.refund_credits(current_user, cost, "Tailor resume failed")
         logger.exception("Tailor resume failed")
@@ -114,8 +119,13 @@ async def process_ats_score(
 
     try:
         result = calculate_ats_score(request.resume, request.jobDescription)
+        if "error" in result:
+            await CreditsService.refund_credits(current_user, cost, "ATS score: Gemini error")
+            raise HTTPException(503, "AI service temporarily unavailable. Credits refunded.")
         result["creditsUsed"] = cost
         return AtsScoreResponse(**result)
+    except HTTPException:
+        raise
     except Exception:
         await CreditsService.refund_credits(current_user, cost, "ATS score failed")
         logger.exception("ATS score failed")

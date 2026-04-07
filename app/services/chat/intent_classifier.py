@@ -1,5 +1,4 @@
 import google.generativeai as genai
-from app.config import settings
 from typing import Literal
 
 
@@ -16,30 +15,30 @@ IntentType = Literal[
     "out_of_scope"
 ]
 
-
-# Initialize Gemini
-genai.configure(api_key=settings.gemini_api_key)
+# Gemini is configured at startup via init_gemini_config() in main.py.
 
 
 async def classify_intent(message: str) -> IntentType:
     """
     Classify user intent using Gemini AI.
-    
+
     Args:
         message: User message to classify
-        
+
     Returns:
         Intent classification as string
     """
     if not message or not isinstance(message, str):
         return "out_of_scope"
-    
+
     try:
+        from app.services.gemini_config_service import get_active_config_sync
+        _gcfg = get_active_config_sync()
         model = genai.GenerativeModel(
-            model_name=settings.gemini_model,
+            model_name=_gcfg["model"],
             generation_config={
                 "temperature": 0.1,  # Low temperature for consistent classification
-                "max_output_tokens": 50,  # Keep it short
+                "max_output_tokens": 50,
                 "top_p": 0.8,
                 "top_k": 40
             }

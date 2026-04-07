@@ -154,5 +154,9 @@ class MongoService:
     def coupon_usage_log(self):
         return self.db.coupon_usage_log
 
+    @property
+    def admin_settings(self):
+        return self.db.admin_settings
+
 
 mongo = MongoService()

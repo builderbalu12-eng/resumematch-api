@@ -3,7 +3,6 @@ import re
 import asyncio
 from bson import ObjectId
 import google.generativeai as genai
-from app.config import settings
 from app.services.chat.domain_guard import is_job_related, get_blocked_response
 from app.services.chat.intent_classifier import classify_intent
 from app.services.job_recommendation_service import (
@@ -19,8 +18,8 @@ from app.models.chat.schemas import ChatMessage
 from typing import List, Dict, Any, Optional, Tuple
 
 
-# Initialize Gemini
-genai.configure(api_key=settings.gemini_api_key)
+# Gemini is configured at startup via init_gemini_config() in main.py.
+# No need to re-configure here — genai.configure() is process-global.
 
 # Supported cities / categories for lead extraction
 _CITIES = [
@@ -589,8 +588,10 @@ class AIChatService:
             }
             system_prompt = system_prompts.get(intent, system_prompts["general_chat"])
 
+            from app.services.gemini_config_service import get_active_config_sync
+            _gcfg = get_active_config_sync()
             model = genai.GenerativeModel(
-                model_name=settings.gemini_model,
+                model_name=_gcfg["model"],
                 system_instruction=(
                     f"{_APP_CONTEXT}\n\n"
                     f"{system_prompt}\n\n"
@@ -598,8 +599,8 @@ class AIChatService:
                     "Never go outside this domain."
                 ),
                 generation_config={
-                    "temperature": settings.gemini_temperature_default,
-                    "max_output_tokens": settings.gemini_max_tokens_default,
+                    "temperature": _gcfg["temperature"],
+                    "max_output_tokens": _gcfg["max_tokens"],
                     "top_p": 0.8,
                     "top_k": 40,
                 },

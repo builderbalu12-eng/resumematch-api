@@ -65,6 +65,9 @@ app.include_router(admin_routes.router, prefix="/api")
 async def startup_event():
     await mongo.connect()
 
+    from app.services.gemini_config_service import init_gemini_config
+    await init_gemini_config()
+
     # Restart previously connected user gateways
     # async for sess in mongo.openclaw_sessions.find({"status": "connected"}):
     #     OpenClawBridge.start_gateway(sess["profile"], sess["port"])
