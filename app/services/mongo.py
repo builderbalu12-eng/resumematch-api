@@ -158,5 +158,13 @@ class MongoService:
     def admin_settings(self):
         return self.db.admin_settings
 
+    @property
+    def daily_job_feed(self):
+        return self.db.daily_job_feed
+
+    @property
+    def rapidapi_usage_log(self):
+        return self.db.rapidapi_usage_log
+
 
 mongo = MongoService()
