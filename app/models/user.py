@@ -1,6 +1,13 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
+
+
+class JobPreferences(BaseModel):
+    desired_role: str = ""
+    preferred_location: str = ""
+    work_type: str = "any"          # "any" | "remote" | "on-site"
+    preferred_sites: List[str] = Field(default_factory=lambda: ["indeed", "linkedin", "google"])
 
 
 class User(BaseModel):

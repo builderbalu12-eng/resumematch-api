@@ -160,9 +160,29 @@ class JobController:
 
     # ─────────────────────────────────────────────────
     # GET /default — default job feed
+    # Serves from daily_job_feed (cron results) first,
+    # falls back to existing logic if no cron data yet.
     # ─────────────────────────────────────────────────
     async def get_default_jobs(self, user_id: str) -> dict:
         try:
+            from app.services.mongo import mongo
+            daily_feeds = await mongo.daily_job_feed.find(
+                {"user_id": user_id},
+                sort=[("created_at", -1)],
+            ).to_list(10)
+
+            if daily_feeds:
+                jobs = [j for feed in daily_feeds for j in feed.get("jobs", [])]
+                # Deduplicate by job_url
+                seen_urls = set()
+                unique_jobs = []
+                for j in jobs:
+                    url = j.get("job_url", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        unique_jobs.append(j)
+                return {"has_recommendations": False, "jobs": unique_jobs[:20]}
+
             return await job_recommendation_service.get_default_jobs(user_id)
         except Exception as e:
             raise HTTPException(

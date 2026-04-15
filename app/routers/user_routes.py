@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Any, Dict
 
-from app.models.user import UserResponse, UserUpdate, ChangePasswordRequest
+from app.models.user import UserResponse, UserUpdate, ChangePasswordRequest, JobPreferences
 from app.controllers.user_controller import (
     UserController,
     UserResponseModel,
@@ -121,6 +121,37 @@ async def get_credits_history(
 
     total = await mongo.credits_log.count_documents(query)
     return {"status": 200, "success": True, "data": {"items": logs, "total": total}}
+
+
+# ─────────────────────────────────────────────────────
+# GET /api/user/me/job-preferences
+# ─────────────────────────────────────────────────────
+@router.get("/me/job-preferences", summary="Get job preferences")
+async def get_job_preferences(current_user: Any = Depends(get_current_user)):
+    user_id = _extract_user_id(current_user)
+    from bson import ObjectId
+    user = await mongo.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    prefs = user.get("job_preferences", {})
+    return {"success": True, "job_preferences": JobPreferences(**prefs).dict()}
+
+
+# ─────────────────────────────────────────────────────
+# PUT /api/user/me/job-preferences
+# ─────────────────────────────────────────────────────
+@router.put("/me/job-preferences", summary="Save job preferences")
+async def update_job_preferences(
+    prefs: JobPreferences,
+    current_user: Any = Depends(get_current_user),
+):
+    user_id = _extract_user_id(current_user)
+    from bson import ObjectId
+    await mongo.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"job_preferences": prefs.dict()}},
+    )
+    return {"success": True, "job_preferences": prefs.dict()}
 
 
 @router.get(

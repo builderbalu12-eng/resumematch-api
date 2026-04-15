@@ -71,6 +71,12 @@ app.include_router(autoapply_routes.router, prefix="/api")
 
 
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+_scheduler = AsyncIOScheduler()
+
+
 @app.on_event("startup")
 async def startup_event():
     await mongo.connect()
@@ -78,13 +84,24 @@ async def startup_event():
     from app.services.gemini_config_service import init_gemini_config
     await init_gemini_config()
 
-    # Restart previously connected user gateways
-    # async for sess in mongo.openclaw_sessions.find({"status": "connected"}):
-    #     OpenClawBridge.start_gateway(sess["profile"], sess["port"])
-    #     print(f"Restarted OpenClaw gateway → {sess['profile']} :{sess['port']}")
-        
+    # Ensure TTL index exists for daily_job_feed
+    from app.services.daily_job_refresh_service import ensure_ttl_index, run_daily_job_refresh
+    await ensure_ttl_index()
+
+    # Schedule daily job refresh at 6:00 AM IST
+    _scheduler.add_job(
+        run_daily_job_refresh,
+        CronTrigger(hour=6, minute=0, timezone="Asia/Kolkata"),
+        id="daily_job_refresh",
+        replace_existing=True,
+    )
+    _scheduler.start()
+    print("[Scheduler] Daily job refresh scheduled at 6:00 AM IST")
+
+
 @app.on_event("shutdown")
 async def shutdown_event():
+    _scheduler.shutdown(wait=False)
     await mongo.close()
 
 
