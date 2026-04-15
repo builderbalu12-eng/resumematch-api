@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from datetime import datetime
 from typing import Dict
@@ -15,11 +16,13 @@ from google.analytics.data_v1beta.types import (
 from google.oauth2 import service_account
 
 _PROPERTY_ID = "properties/528274628"
+_SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
+
+# Local file path (works in dev)
 _CREDENTIALS_PATH = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "..", "..", "google-analytics-credentials.json",
 ))
-_SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"]
 
 _DATE_RANGES = {
     "today": ("today", "today"),
@@ -30,9 +33,17 @@ _DATE_RANGES = {
 
 
 def _get_client() -> BetaAnalyticsDataClient:
-    creds = service_account.Credentials.from_service_account_file(
-        _CREDENTIALS_PATH, scopes=_SCOPES
-    )
+    # Prefer env var (Railway/production) — avoids needing a file on disk
+    ga_json = os.environ.get("GA4_CREDENTIALS_JSON", "")
+    if ga_json:
+        info = json.loads(ga_json)
+        creds = service_account.Credentials.from_service_account_info(info, scopes=_SCOPES)
+    elif os.path.exists(_CREDENTIALS_PATH):
+        creds = service_account.Credentials.from_service_account_file(_CREDENTIALS_PATH, scopes=_SCOPES)
+    else:
+        raise FileNotFoundError(
+            "GA4 credentials not found. Set GA4_CREDENTIALS_JSON env var in Railway."
+        )
     return BetaAnalyticsDataClient(credentials=creds)
 
 
