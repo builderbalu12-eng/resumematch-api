@@ -34,12 +34,15 @@ class AuthController:
 
         hashed_password = pwd_context.hash(user_data.password)
 
+        from app.services.admin_settings_service import get_default_credits
+        default_credits = await get_default_credits()
+
         user_doc = {
             "firstName":  user_data.firstName,
             "lastName":   user_data.lastName,
             "email":      user_data.email,
             "password":   hashed_password,
-            "credits":    150.0,
+            "credits":    default_credits,
             "created_at": datetime.utcnow(),
             "auth_provider": "local",
             "google_id":  None,

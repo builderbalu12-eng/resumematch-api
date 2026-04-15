@@ -8,7 +8,9 @@ from app.dependencies.admin import require_admin
 from app.controllers.admin_controller import AdminController
 from app.controllers.analytics_controller import AnalyticsController
 from app.controllers.payment.coupon_controller import CouponController
+from app.controllers.payment.plan_controller import PlanController
 from app.models.payment.coupon import CouponCreate
+from app.models.payment.plan import PlanCreate, PlanUpdate
 from app.services.mongo import mongo
 from app.config import settings
 from app.services.gemini_config_service import (
@@ -16,6 +18,7 @@ from app.services.gemini_config_service import (
     save_gemini_config,
     AVAILABLE_MODELS,
 )
+from app.services.admin_settings_service import get_default_credits, set_default_credits
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -27,6 +30,10 @@ class AdjustCreditsBody(BaseModel):
 
 class UpdateFeatureCostBody(BaseModel):
     credits_per_unit: float
+
+
+class SetDefaultCreditsBody(BaseModel):
+    credits: float
 
 
 class AdminCouponCreate(BaseModel):
@@ -396,3 +403,63 @@ async def get_mongodb_resource(admin: str = Depends(require_admin)):
             "collection_details": col_details,
         }
     }
+
+
+# ── Default Signup Credits ────────────────────────────────────
+
+@router.get("/settings/default-credits")
+async def get_signup_credits(admin: str = Depends(require_admin)):
+    """Get the default credits given to every new user on signup."""
+    value = await get_default_credits()
+    return {"success": True, "default_credits": value}
+
+
+@router.patch("/settings/default-credits")
+async def update_signup_credits(
+    body: SetDefaultCreditsBody,
+    admin: str = Depends(require_admin),
+):
+    """Update the default credits given to every new user on signup."""
+    if body.credits < 0:
+        raise HTTPException(400, "Credits cannot be negative")
+    value = await set_default_credits(body.credits)
+    return {"success": True, "default_credits": value}
+
+
+# ── Plans / Pricing ───────────────────────────────────────────
+
+@router.get("/plans")
+async def list_all_plans(
+    active_only: bool = Query(False),
+    admin: str = Depends(require_admin),
+):
+    """List all plans (including inactive) for admin editing."""
+    return await PlanController.list_plans(skip=0, limit=100, active_only=active_only, current_user=admin)
+
+
+@router.post("/plans")
+async def create_plan(
+    data: PlanCreate,
+    admin: str = Depends(require_admin),
+):
+    """Create a new plan (creates Razorpay plan for paid recurring plans)."""
+    return await PlanController.create_plan(data, admin)
+
+
+@router.patch("/plans/{plan_id}")
+async def update_plan(
+    plan_id: str,
+    data: PlanUpdate,
+    admin: str = Depends(require_admin),
+):
+    """Update plan fields: name, amount, credits_per_cycle, points, is_active."""
+    return await PlanController.update_plan(plan_id, data, admin)
+
+
+@router.delete("/plans/{plan_id}")
+async def delete_plan(
+    plan_id: str,
+    admin: str = Depends(require_admin),
+):
+    """Delete a plan (hard delete — use PATCH is_active=false to soft-disable)."""
+    return await PlanController.delete_plan(plan_id, admin)

@@ -97,12 +97,14 @@ class GoogleAuthController:
                 user = existing
             else:
                 print("Creating new Google user:", user_info["email"])
+                from app.services.admin_settings_service import get_default_credits
+                default_credits = await get_default_credits()
                 new_user = {
                     "firstName": user_info.get("given_name", ""),
                     "lastName": user_info.get("family_name", ""),
                     "email": user_info["email"],
                     "password": None,
-                    "credits": 150.0,
+                    "credits": default_credits,
                     "created_at": datetime.utcnow(),
                     "auth_provider": "google",
                     "google_id": user_info["id"]
