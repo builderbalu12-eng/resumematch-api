@@ -10,6 +10,7 @@ from app.controllers.analytics_controller import AnalyticsController
 from app.controllers.payment.coupon_controller import CouponController
 from app.models.payment.coupon import CouponCreate
 from app.services.mongo import mongo
+from app.config import settings
 from app.services.gemini_config_service import (
     get_gemini_config,
     save_gemini_config,
@@ -240,6 +241,37 @@ async def update_gemini_config(
         raise HTTPException(400, "No fields provided to update")
     await save_gemini_config(update, admin_email=admin)
     return {"success": True, "message": "Gemini config updated and applied immediately."}
+
+
+@router.get("/resources/jsearch")
+async def get_jsearch_resource(admin: str = Depends(require_admin)):
+    """Return JSearch / RapidAPI quota usage for today + 30-day history."""
+    today     = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    thirty_ago = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    doc = await mongo.rapidapi_usage_log.find_one({"date": today})
+
+    history_cursor = mongo.rapidapi_usage_log.find(
+        {"date": {"$gte": thirty_ago}},
+        sort=[("date", 1)],
+    )
+    history = [
+        {"date": h["date"], "calls": h.get("calls_today", 0)}
+        async for h in history_cursor
+    ]
+
+    key = settings.jsearch_api_key
+    return {
+        "data": {
+            "api_key_masked":     (key[:8] + "•" * 20) if key else "",
+            "requests_limit":     doc["requests_limit"]     if doc else 200,
+            "requests_remaining": doc["requests_remaining"] if doc else 200,
+            "calls_today":        doc["calls_today"]        if doc else 0,
+            "requests_reset":     doc.get("requests_reset") if doc else None,
+            "last_updated":       doc["last_updated"].isoformat() if doc and doc.get("last_updated") else None,
+            "usage_history":      history,
+        }
+    }
 
 
 @router.get("/resources/mongodb")

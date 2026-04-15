@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     telegram_bot_token:    str = ""
     telegram_bot_username: str = ""
 
+    # ── JSearch / RapidAPI ───────────────────────────────────────
+    jsearch_api_key: str = ""  # Set JSEARCH_API_KEY in Railway env vars
+
     # ── Telegram job discovery / alerts ─────────────────────────
     telegram_job_search_top_n: int = 8
     telegram_alert_default_timezone: str = "Asia/Kolkata"

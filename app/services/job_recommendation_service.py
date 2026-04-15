@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
 from functools import partial
 
+import httpx
 import pandas as pd
 from bs4 import BeautifulSoup
 from bson import ObjectId
@@ -70,7 +71,107 @@ def _df_to_job_list(df: pd.DataFrame) -> List[Dict[str, Any]]:
 
 
 # ─────────────────────────────────────────
-# SYNC SCRAPERS
+# JSEARCH API (PRIMARY)
+# ─────────────────────────────────────────
+class _QuotaExhausted(Exception):
+    pass
+
+
+def _map_jsearch_job(j: Dict[str, Any]) -> Dict[str, Any]:
+    city    = _clean(j.get("job_city", ""))
+    state   = _clean(j.get("job_state", ""))
+    country = _clean(j.get("job_country", ""))
+    loc_parts = [p for p in [city, state, country] if p]
+    location = ", ".join(loc_parts) if loc_parts else _clean(j.get("job_location", ""))
+
+    return {
+        "site":        "jsearch",
+        "title":       _clean(j.get("job_title", "")),
+        "company":     _clean(j.get("employer_name", "")),
+        "location":    location,
+        "is_remote":   j.get("job_is_remote", None),
+        "job_type":    _clean(j.get("job_employment_type", "")),
+        "salary":      "",
+        "experience":  "",
+        "job_url":     _clean(j.get("job_apply_link", "") or j.get("job_google_link", "")),
+        "date_posted": _clean(j.get("job_posted_at_datetime_utc", "")),
+        "description": _clean(j.get("job_description", ""))[:MAX_DESC_CHARS],
+    }
+
+
+async def _log_rapidapi_usage(resp_headers: Dict[str, str]) -> None:
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        limit     = int(resp_headers.get("x-ratelimit-requests-limit", 0))
+        remaining = int(resp_headers.get("x-ratelimit-requests-remaining", 0))
+        reset_val = resp_headers.get("x-ratelimit-requests-reset", "")
+
+        await mongo.rapidapi_usage_log.update_one(
+            {"date": today},
+            {
+                "$set": {
+                    "requests_limit":     limit,
+                    "requests_remaining": remaining,
+                    "requests_reset":     reset_val,
+                    "last_updated":       datetime.now(timezone.utc),
+                },
+                "$inc": {"calls_today": 1},
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        print(f"[RapidAPI Usage Log] Failed to log: {e}")
+
+
+async def _scrape_jsearch(
+    search_term: str,
+    location:    str,
+    hours_old:   int,
+    is_remote:   Optional[bool],
+    api_key:     str,
+) -> List[Dict[str, Any]]:
+    if not api_key:
+        raise _QuotaExhausted("No JSearch API key configured")
+
+    query       = f"{search_term} in {location}" if location else search_term
+    date_posted = "3days" if hours_old <= 72 else "month"
+    params: Dict[str, str] = {
+        "query":       query,
+        "page":        "1",
+        "num_pages":   "2",
+        "date_posted": date_posted,
+    }
+    if is_remote is True:
+        params["remote_jobs_only"] = "true"
+
+    headers = {
+        "X-RapidAPI-Key":  api_key,
+        "X-RapidAPI-Host": "jsearch.p.rapidapi.com",
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            "https://jsearch.p.rapidapi.com/search",
+            params=params,
+            headers=headers,
+        )
+
+    # Fire-and-forget usage logging
+    asyncio.create_task(_log_rapidapi_usage(dict(resp.headers)))
+
+    if resp.status_code in (429, 403):
+        raise _QuotaExhausted(f"JSearch quota/auth error: HTTP {resp.status_code}")
+
+    resp.raise_for_status()
+
+    data = resp.json().get("data", [])
+    jobs = [_map_jsearch_job(j) for j in data if j.get("job_title") and j.get("employer_name")]
+    print(f"[JSearch] Fetched {len(jobs)} jobs for '{query}'")
+    return jobs
+
+
+# ─────────────────────────────────────────
+# JOBSPY FALLBACK (Indeed only — cloud-safe)
 # ─────────────────────────────────────────
 def _scrape_jobspy_sync(
     search_term:      str,
@@ -102,7 +203,7 @@ def _scrape_jobspy_sync(
 
         df   = scrape_jobs(**kwargs)
         jobs = _df_to_job_list(df)
-        print(f"[JobSpy] Scraped {len(jobs)} jobs")
+        print(f"[JobSpy fallback] Scraped {len(jobs)} jobs from {sites}")
         return jobs
     except Exception as e:
         import traceback
@@ -111,6 +212,9 @@ def _scrape_jobspy_sync(
         return []
 
 
+# ─────────────────────────────────────────
+# NAUKRI SCRAPERS
+# ─────────────────────────────────────────
 def _scrape_naukri_pypi_sync(search_term: str, pages: int) -> List[Dict[str, Any]]:
     try:
         from naukri_scraper.scraper import scrape_jobs as naukri_scrape
@@ -306,13 +410,9 @@ class JobRecommendationService:
 
     # ── Auto-fetch latest resume_id for user ──────────
     async def get_resume_id_for_user(self, user_id: str) -> str:
-        """
-        Fetches the most recently uploaded resume_id from incoming_resumes.
-        Controller calls this so frontend never needs to send resume_id.
-        """
         doc = await mongo.incoming_resumes.find_one(
             {"user_id": user_id},
-            sort=[("created_at", -1)]   # latest resume first
+            sort=[("created_at", -1)]
         )
         if not doc:
             raise ValueError(
@@ -411,60 +511,71 @@ class JobRecommendationService:
         return list_id
 
     # ── Main recommend flow ───────────────────────────
-    # resume_id passed from controller (fetched via get_resume_id_for_user)
-    # payload no longer needs resume_id field
     async def recommend_jobs(
         self,
         user_id:   str,
-        resume_id: str,       # ← passed from controller, NOT from payload
+        resume_id: str,
         payload:   Any,
     ) -> Dict[str, Any]:
 
-        # 1. Get resume text using fetched resume_id
+        # 1. Get resume text
         resume_text = await self._get_resume_text(resume_id, user_id)
 
         loop = asyncio.get_event_loop()
 
-        # 2. Scrape JobSpy + Naukri concurrently
-        jobspy_task = loop.run_in_executor(
-            None,
-            partial(
-                _scrape_jobspy_sync,
-                payload.search_term,
-                payload.location,
-                payload.results_per_site,
-                payload.hours_old,
-                payload.sites,
-                "India",
-                payload.is_remote,
-                None,
+        # 2. Primary: JSearch API; Fallback: JobSpy Indeed-only
+        jobs_jsearch: List[Dict[str, Any]] = []
+        try:
+            jobs_jsearch = await _scrape_jsearch(
+                search_term = payload.search_term,
+                location    = payload.location,
+                hours_old   = payload.hours_old,
+                is_remote   = payload.is_remote,
+                api_key     = settings.jsearch_api_key,
             )
-        )
+        except _QuotaExhausted as e:
+            print(f"[JSearch] Quota exhausted — falling back to JobSpy: {e}")
+        except Exception as e:
+            print(f"[JSearch] Error — falling back to JobSpy: {e}")
 
-        naukri_task = (
-            loop.run_in_executor(
+        # JobSpy fallback: only Indeed (LinkedIn/Google blocked on cloud IPs)
+        jobs_jobspy: List[Dict[str, Any]] = []
+        if len(jobs_jsearch) == 0:
+            jobs_jobspy = await loop.run_in_executor(
+                None,
+                partial(
+                    _scrape_jobspy_sync,
+                    payload.search_term,
+                    payload.location,
+                    payload.results_per_site,
+                    payload.hours_old,
+                    ["indeed"],          # cloud-safe: only Indeed
+                    "India",
+                    payload.is_remote,
+                    None,
+                )
+            )
+
+        # 3. Naukri (concurrent with jsearch already done, run now if requested)
+        jobs_naukri: List[Dict[str, Any]] = []
+        if payload.include_naukri:
+            jobs_naukri = await loop.run_in_executor(
                 None,
                 partial(_scrape_naukri_pypi_sync, payload.search_term, payload.naukri_pages)
             )
-            if payload.include_naukri
-            else asyncio.sleep(0)
-        )
+            if len(jobs_naukri) == 0:
+                print("[Naukri] PyPI returned 0 jobs, falling back to raw scraper...")
+                jobs_naukri = await loop.run_in_executor(
+                    None,
+                    partial(_scrape_naukri_raw_sync, payload.search_term, payload.location, payload.naukri_pages)
+                )
 
-        jobs_jobspy, jobs_naukri = await asyncio.gather(jobspy_task, naukri_task)
-
-        if not isinstance(jobs_naukri, list):
-            jobs_naukri = []
-
-        if payload.include_naukri and len(jobs_naukri) == 0:
-            print("[Naukri] PyPI returned 0 jobs, falling back to raw scraper...")
-            jobs_naukri = await loop.run_in_executor(
-                None,
-                partial(_scrape_naukri_raw_sync, payload.search_term, payload.location, payload.naukri_pages)
-            )
-
-        all_jobs      = jobs_jobspy + jobs_naukri
+        all_jobs      = jobs_jsearch + jobs_jobspy + jobs_naukri
         total_scraped = len(all_jobs)
-        print(f"[JobRecommend] Scraped {total_scraped} total ({len(jobs_jobspy)} JobSpy + {len(jobs_naukri)} Naukri)")
+        print(
+            f"[JobRecommend] Scraped {total_scraped} total "
+            f"({len(jobs_jsearch)} JSearch + {len(jobs_jobspy)} JobSpy + {len(jobs_naukri)} Naukri)"
+        )
 
         if total_scraped == 0:
             return {
@@ -475,7 +586,7 @@ class JobRecommendationService:
                 "jobs":           [],
             }
 
-        # 3. Pre-filter: deduplicate by URL + cap to MAX_JOBS_TO_GEMINI
+        # 4. Pre-filter: deduplicate by URL + cap to MAX_JOBS_TO_GEMINI
         seen_urls = set()
         filtered  = []
         for j in all_jobs:
@@ -487,16 +598,16 @@ class JobRecommendationService:
         filtered = filtered[:MAX_JOBS_TO_GEMINI]
         print(f"[JobRecommend] Sending {len(filtered)} jobs to Gemini (capped from {total_scraped})")
 
-        # 4. Rank + summarize with Gemini
+        # 5. Rank + summarize with Gemini
         top_jobs = await loop.run_in_executor(
             None,
             partial(_rank_and_summarize_sync, resume_text, filtered, payload.top_n)
         )
 
-        # 5. Save to MongoDB — no CSV, no files
+        # 6. Save to MongoDB
         list_id = await self.save_results(
             user_id     = user_id,
-            resume_id   = resume_id,       # ← use fetched resume_id
+            resume_id   = resume_id,
             search_term = payload.search_term,
             location    = payload.location,
             jobs        = top_jobs,
@@ -609,7 +720,33 @@ class JobRecommendationService:
         max_days:  int = 30,
     ) -> Dict[str, Any]:
 
-        # Check if this user already has personalized recommendations
+        # 1. Check daily_job_feed first (personalized cron results)
+        daily_cursor = mongo.daily_job_feed.find(
+            {"user_id": user_id},
+            sort=[("created_at", -1)]
+        )
+        daily_feeds = await daily_cursor.to_list(10)
+        if daily_feeds:
+            jobs: List[Dict[str, Any]] = []
+            seen_urls: set = set()
+            for feed in daily_feeds:
+                for j in feed.get("jobs", []):
+                    url = j.get("job_url", "")
+                    if url not in seen_urls:
+                        seen_urls.add(url)
+                        jobs.append(j)
+            if jobs:
+                return {
+                    "success":             True,
+                    "has_recommendations": False,
+                    "message":             "Showing your personalized daily feed",
+                    "jobs":                jobs[:20],
+                    "total":               len(jobs[:20]),
+                    "days_fetched":        0,
+                    "source":              "daily_feed",
+                }
+
+        # 2. Check if this user already has personalized recommendations
         existing = await mongo.listed_jobs.find_one({"user_id": user_id})
         if existing:
             return {
@@ -621,7 +758,7 @@ class JobRecommendationService:
                 "days_fetched":        0,
             }
 
-        # Fetch day by day until we have min_count jobs
+        # 3. Fetch day by day until we have min_count jobs
         collected   = []
         days_looked = 0
         now_utc     = datetime.now(timezone.utc)
@@ -634,18 +771,15 @@ class JobRecommendationService:
             day_start   = target_date.replace(hour=0,  minute=0,  second=0,  microsecond=0)
             day_end     = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
 
-            need   = min_count - len(collected)
-
-            # Pull globally — exclude requesting user's own jobs + deduplicate URLs
-            seen_urls = [j["job_url"] for j in collected]
+            seen_urls_list = [j["job_url"] for j in collected]
             cursor = mongo.listed_jobs.find(
                 {
                     "created_at": {"$gte": day_start, "$lte": day_end},
                     "user_id":    {"$ne": user_id},
-                    "job_url":    {"$nin": seen_urls},
+                    "job_url":    {"$nin": seen_urls_list},
                 },
                 sort=[("fit_score", -1), ("created_at", -1)]
-            ).limit(need)
+            ).limit(min_count - len(collected))
 
             day_jobs = []
             async for doc in cursor:
