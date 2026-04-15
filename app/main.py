@@ -12,6 +12,11 @@ from app.routers import chat_routes
 from app.services.mongo import mongo
 from app.routers import client_routes  # ✅ ADD
 from app.routers import admin_routes
+from app.routers import application_routes
+from app.routers import portfolio_routes
+from app.routers import interview_routes
+from app.routers import github_sync_routes
+from app.routers import autoapply_routes
 
 
 app = FastAPI(
@@ -57,6 +62,11 @@ app.include_router(job_routes.router, prefix="/api")
 app.include_router(chat_routes.router, prefix="/api")
 app.include_router(client_routes.router, prefix="/api")  # ✅ ADD
 app.include_router(admin_routes.router, prefix="/api")
+app.include_router(application_routes.router, prefix="/api")
+app.include_router(portfolio_routes.router, prefix="/api")
+app.include_router(interview_routes.router, prefix="/api")
+app.include_router(github_sync_routes.router, prefix="/api")
+app.include_router(autoapply_routes.router, prefix="/api")
 
 
 

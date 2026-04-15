@@ -17,6 +17,7 @@ from app.services.resume_processor import (
     parse_job_description,
     generate_cover_letter,
     check_resume_completeness,
+    analyze_and_tailor,
 )
 from app.models.gemini.schemas import (
     AnalyzeResumeRequest, AnalyzeResumeResponse,
@@ -26,6 +27,7 @@ from app.models.gemini.schemas import (
     ParseJobRequest, ParseJobResponse,
     GenerateCoverLetterRequest, GenerateCoverLetterResponse,
     CheckCompletenessRequest, CheckCompletenessResponse,
+    AnalyzeAndTailorRequest, AnalyzeAndTailorResponse,
 )
 from app.services.incoming_resume_service import IncomingResumeService
 
@@ -168,6 +170,30 @@ async def process_generate_cover_letter(
         await CreditsService.refund_credits(current_user, cost, "Cover letter generation failed")
         logger.exception("Cover letter generation failed")
         raise HTTPException(500, "Cover letter generation failed")
+
+
+async def process_analyze_and_tailor(
+    request: AnalyzeAndTailorRequest,
+    current_user: str
+) -> AnalyzeAndTailorResponse:
+    cost = await CreditsService.get_feature_cost("analyze_and_tailor")
+    success, message = await CreditsService.deduct_credits(current_user, amount=cost, feature="analyze_and_tailor")
+    if not success:
+        raise HTTPException(403, message or "Insufficient credits")
+
+    try:
+        result = analyze_and_tailor(request.pageText, request.resume, request.configuredSections)
+        if "error" in result:
+            await CreditsService.refund_credits(current_user, cost, "Analyze and tailor: Gemini error")
+            raise HTTPException(503, "AI service temporarily unavailable. Credits refunded.")
+        result["creditsUsed"] = cost
+        return AnalyzeAndTailorResponse(**result)
+    except HTTPException:
+        raise
+    except Exception:
+        await CreditsService.refund_credits(current_user, cost, "Analyze and tailor failed")
+        logger.exception("Analyze and tailor failed")
+        raise HTTPException(500, "Processing failed")
 
 
 async def process_check_completeness(

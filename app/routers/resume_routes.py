@@ -16,6 +16,7 @@ from app.controllers.gemini_resume_controller import (
     process_parse_job,
     process_generate_cover_letter,
     process_check_completeness,
+    process_analyze_and_tailor,
 )
 
 from app.models.gemini.schemas import (
@@ -26,6 +27,7 @@ from app.models.gemini.schemas import (
     ParseJobRequest, ParseJobResponse,
     GenerateCoverLetterRequest, GenerateCoverLetterResponse,
     CheckCompletenessRequest, CheckCompletenessResponse,
+    AnalyzeAndTailorRequest, AnalyzeAndTailorResponse,
 )
 
 router = APIRouter(tags=["resume"])
@@ -312,6 +314,19 @@ async def gemini_check_completeness(
     Credits used: 1
     """
     return await process_check_completeness(request, current_user)
+
+
+@router.post("/analyze-and-tailor", response_model=AnalyzeAndTailorResponse)
+async def gemini_analyze_and_tailor(
+    request: AnalyzeAndTailorRequest,
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Combined endpoint: extract job data + tailor resume + ATS score in one Gemini call.
+    Used by the Chrome extension for maximum speed and reliability.
+    Credits used: 3
+    """
+    return await process_analyze_and_tailor(request, current_user)
 
 
 # ── Incoming Resume (Save + Read) ─────────────────────────────────────

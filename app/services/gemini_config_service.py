@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # ── Available models with free-tier limits (from Google docs) ─
 AVAILABLE_MODELS = [
-    {"id": "gemini-2.5-flash",      "name": "Gemini 2.5 Flash",      "rpd": 1500, "rpm": 20, "tpm": 1_000_000},
+    {"id": "gemini-2.5-flash",      "name": "Gemini 2.5 Flash",      "rpd": 500,  "rpm":  5, "tpm": 250_000},
     {"id": "gemini-2.5-flash-lite", "name": "Gemini 2.5 Flash-Lite", "rpd": 1500, "rpm": 30, "tpm": 1_000_000},
     {"id": "gemini-2.0-flash",      "name": "Gemini 2.0 Flash",      "rpd": 1500, "rpm": 15, "tpm": 1_000_000},
     {"id": "gemini-2.0-flash-lite", "name": "Gemini 2.0 Flash-Lite", "rpd": 1500, "rpm": 30, "tpm": 1_000_000},

@@ -69,7 +69,7 @@ def call_gemini(
         logger.warning(f"Could not load live Gemini config, using .env defaults: {e}")
         active_model = model or MODEL
 
-    for attempt in range(2):  # retry once if JSON fails
+    for attempt in range(2):  # 1 retry for JSON parse failures only
         try:
             gen_model = genai.GenerativeModel(active_model)
 
@@ -106,11 +106,12 @@ def call_gemini(
                     }
 
         except Exception as e:
+            err_msg = str(e)
+            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
+                logger.error(f"Rate limit hit on model {active_model}. Switch to a higher-RPM model in admin panel.")
+                return {"error": "gemini_api_error", "message": err_msg}
             logger.exception("Gemini API call failed")
-            return {
-                "error": "gemini_api_error",
-                "message": str(e),
-            }
+            return {"error": "gemini_api_error", "message": err_msg}
 
     return {"error": "unknown_error", "message": "Unexpected Gemini failure"}
 
@@ -241,30 +242,43 @@ Job Description:
 
 def tailor_resume(resume: str, job_description: str) -> Dict:
     prompt = f"""You are an expert ATS optimization specialist and professional resume writer.
-Your sole goal is to rewrite the resume to achieve the MAXIMUM possible ATS score against the given job description.
+Your goal is to tailor this resume for MAXIMUM ATS compatibility against the given job description.
 
 ## Step 1 — Extract ALL keywords from the job description
 Identify every required skill, tool, technology, certification, and key phrase.
 Pay attention to exact terminology (e.g. "cross-functional collaboration", "CI/CD pipelines", "agile methodology").
 
-## Step 2 — Rewrite the resume
-- Incorporate EVERY required keyword and skill from Step 1 naturally into the resume
-- Mirror the exact phrasing from the job description throughout — ATS systems match exact strings
-- Place most relevant experience and skills first (reorder sections if needed)
-- Quantify all achievements using numbers already present in the original (do not fabricate)
-- Use standard ATS-safe section headers: SUMMARY, EXPERIENCE, SKILLS, EDUCATION, CERTIFICATIONS
-- Add a dedicated SKILLS section listing all matched keywords if not already present
-- NEVER use tables, columns, text boxes, or graphics — ATS parsers cannot read these
-- Keep all original facts — do not invent experience, credentials, or employers
+## Step 2 — Rewrite the resume sections
+- Rewrite the summary to highlight the candidate's most relevant experience for this specific role
+- Reorder skills by descending relevance to the job description (most relevant first)
+- Rewrite experience bullets to incorporate JD keywords naturally and mirror exact JD phrasing (ATS matches exact strings)
+- Quantify achievements using numbers already present in the original — NEVER fabricate metrics
+- Rewrite project descriptions to emphasize technologies and outcomes that match the JD
+- Keep ALL original facts — do not invent experience, credentials, employers, or metrics
 
 ## Step 3 — Score
-Count how many required keywords from Step 1 are naturally present in the rewritten resume.
-Estimate a realistic ATS compatibility score from 0 to 100.
+Estimate a realistic ATS compatibility score from 0 to 100 based on keyword coverage.
 
-Return ONLY valid JSON with these exact keys:
+Return ONLY valid JSON with these exact keys. Use the EXACT original job titles and company names so they can be matched:
 {{
-  "tailoredResume": "full optimized resume in plain text",
-  "optimizationNotes": ["string", "string", ...],
+  "summary": "tailored 2-3 sentence professional summary emphasizing JD-relevant experience",
+  "skills": ["most relevant skill to JD", "second most relevant", "...all original skills reordered"],
+  "experience": [
+    {{
+      "title": "EXACT original job title from resume",
+      "company": "EXACT original company name from resume",
+      "description": ["rewritten bullet with JD keyword + metric", "second bullet", "..."]
+    }}
+  ],
+  "projects": [
+    {{
+      "title": "EXACT original project title from resume",
+      "description": "rewritten 2-3 sentence description emphasizing JD-relevant technologies and quantified impact"
+    }}
+  ],
+  "jobTitle": "actual job title extracted from the job description",
+  "company": "actual company name extracted from the job description",
+  "optimizationNotes": ["key change 1", "key change 2"],
   "estimatedATSScore": number
 }}
 
@@ -276,9 +290,21 @@ Job Description:
 """
     result = call_gemini(prompt, temperature=0.0)
 
-    # Cross-validate with the independent ATS scorer so the score is objective
+    # Cross-validate ATS score: rebuild plain text from structured result for objective scoring
     try:
-        ats_result = calculate_ats_score(result.get("tailoredResume", ""), job_description)
+        plain_parts = []
+        if result.get("summary"):
+            plain_parts.append(result["summary"])
+        if result.get("skills"):
+            plain_parts.append(" ".join(result["skills"]))
+        for exp in result.get("experience", []):
+            plain_parts.append(f"{exp.get('title', '')} {exp.get('company', '')}")
+            plain_parts.extend(exp.get("description", []))
+        for proj in result.get("projects", []):
+            plain_parts.append(f"{proj.get('title', '')} {proj.get('description', '')}")
+        tailored_plain_text = "\n".join(plain_parts)
+
+        ats_result = calculate_ats_score(tailored_plain_text, job_description)
         if ats_result.get("atsScore") is not None:
             result["estimatedATSScore"] = ats_result["atsScore"]
         if ats_result.get("scoreBreakdown"):
@@ -293,7 +319,7 @@ def calculate_ats_score(resume: str, job_description: str) -> Dict:
     prompt = f"""You are an ATS optimization specialist.
 Analyze this resume against the job description for ATS compatibility.
 
-Return **only valid JSON** with these exact keys:
+Return ONLY valid JSON:
 
 {{
   "atsScore": number 0-100,
@@ -303,13 +329,18 @@ Return **only valid JSON** with these exact keys:
     "structure": number 0-100,
     "relevance": number 0-100
   }},
-  "improvements": array of objects, each with:
-    "issue": string (short description),
-    "suggestion": string (how to fix),
-    "impact": string (estimated score increase, e.g. "+5–8 points")
-  }},
-  "topMissingKeywords": array of strings (5–10 most important missing terms)
+  "improvements": [
+    {{"issue": "short description", "suggestion": "how to fix", "impact": "+5-8 points"}}
+  ],
+  "topMissingKeywords": ["missing skill or tool", "another missing skill"]
 }}
+
+IMPORTANT for topMissingKeywords: Only include TECHNICAL SKILLS, TOOLS, TECHNOLOGIES, FRAMEWORKS, and DOMAIN KEYWORDS that are required in the job description but absent from the resume. Do NOT include:
+- Locations or city names (e.g. Bengaluru, Mumbai)
+- Years of experience (e.g. "3-5 years", "5+ years")
+- Generic phrases (e.g. "team player", "communication skills")
+- Education degrees
+- Salary information
 
 Resume:
 {resume}
@@ -321,27 +352,28 @@ Job Description:
 
 
 def parse_job_description(job_description: str) -> Dict:
-    prompt = f"""You are a job description parser.
-Extract structured information from this job posting.
+    prompt = f"""Extract structured information from this job posting. Read carefully and pull out the ACTUAL values — do not use placeholder text.
 
-Return **only valid JSON** with these exact keys (use null when information is missing):
+Return ONLY this JSON (null if a field is genuinely missing):
 
 {{
-  "jobTitle": string or null,
-  "company": string or null,
-  "requiredSkills": array of strings,
-  "preferredSkills": array of strings,
-  "experience": string (e.g. "5+ years", "3–7 years"),
-  "education": string or null,
-  "salaryRange": string or null,
-  "jobType": string or null (e.g. "Full-time", "Remote", "Hybrid"),
-  "location": string or null,
-  "description": string (short summary or first paragraph),
-  "responsibilities": array of strings,
-  "benefits": array of strings or null
+  "jobTitle": "the actual job title e.g. Senior Software Engineer",
+  "company": "the actual company name e.g. Google",
+  "requiredSkills": ["actual skill 1", "actual skill 2"],
+  "preferredSkills": ["actual preferred skill 1"],
+  "experience": "actual experience requirement e.g. 3-5 years",
+  "education": "actual education requirement or null",
+  "salaryRange": "salary if mentioned or null",
+  "jobType": "Full-time / Part-time / Contract / Remote / Hybrid or null",
+  "location": "actual city/country or null",
+  "description": "1-2 sentence summary of what the role does",
+  "responsibilities": ["actual responsibility 1", "actual responsibility 2"],
+  "benefits": ["benefit 1"] or null
 }}
 
-Full job description text:
+IMPORTANT: Extract the REAL values from the text. Never use "Job Position", "Company", or any generic placeholder as a value.
+
+Job posting:
 {job_description}
 """
     return call_gemini(prompt, temperature=0.1)
@@ -376,6 +408,138 @@ Job Description:
 {job_description}
 """
     return call_gemini(prompt, temperature=0.35)
+
+
+def analyze_and_tailor(page_text: str, resume_json: dict, configured_sections: list) -> dict:
+    """
+    Single combined Gemini call: extract job data + tailor resume + ATS score.
+    Mirrors the main branch's analyzeJobAndTailorResume single-prompt approach.
+    Optional second call for custom sections.
+    """
+    import json as _json
+
+    # Serialize resume to compact readable format for the prompt
+    resume_str = _json.dumps(resume_json, indent=2)
+
+    prompt = f"""Extract job details and tailor this resume for maximum ATS matching. Return ONLY valid JSON:
+
+{{
+  "jobTitle": "the actual job title extracted from the posting",
+  "company": "the actual company name extracted from the posting",
+  "location": "city/country or 'Not specified'",
+  "jobDescription": "2-3 sentence summary of what the role does",
+  "requirements": ["actual requirement 1", "actual requirement 2"],
+  "skills": ["actual skill 1", "actual skill 2"],
+  "tailoredSummary": "2-3 sentence professional summary emphasizing the candidate's most relevant experience for this specific role",
+  "tailoredExperience": [
+    {{
+      "position": "EXACT original job title from resume",
+      "newBullets": [
+        "impact-driven bullet with quantifiable metric (%, numbers, improved, achieved, etc.) + JD keyword",
+        "second bullet incorporating specific job keywords naturally",
+        "third bullet showing direct alignment with job requirements"
+      ]
+    }}
+  ],
+  "tailoredProjects": [
+    {{
+      "title": "EXACT original project title from resume",
+      "newDescription": "3-4 sentences: (1) what problem it solved, (2) technologies used especially those matching job requirements, (3) measurable impact/results with specific metrics"
+    }}
+  ],
+  "tailoredSkillsOrder": ["most relevant skill to this job", "second most relevant", "all other skills in descending relevance"],
+  "atsScore": 0-100,
+  "atsMatchPercentage": 0-100,
+  "matchedKeywords": ["keyword found in both resume and job"],
+  "missingKeywords": ["important JD keyword not in resume"],
+  "improvements": ["specific actionable improvement 1", "improvement 2"],
+  "jobSummary": "one sentence: X% match for [job title] at [company]"
+}}
+
+ATS Scoring Instructions:
+- Extract ALL skills and requirements from the job posting (aim for 15+ keywords)
+- atsScore: base on skill match percentage; add bonus points for metrics in experience bullets and job title relevance; minimum 20
+- Well-tailored resume (4+ relevant bullets, strong skill alignment): score 75-85+
+- Excellent (5+ bullets with metrics, multiple relevant projects, strong summary): 80-90+
+- tailoredExperience bullets must incorporate JD keywords naturally and include quantifiable metrics
+- tailoredProjects: 3-4 detailed sentences with JD-relevant technologies and quantified results
+- tailoredSkillsOrder: reorder existing resume skills by relevance to this job (do not add new skills)
+- IMPORTANT: Use EXACT original job titles/project titles from the resume so matching works correctly
+
+Job posting:
+{page_text}
+
+Resume:
+{resume_str}"""
+
+    result = call_gemini(prompt, temperature=0.0, max_tokens=8192)
+
+    if "error" in result:
+        return result
+
+    # Normalize fields
+    out = {
+        "jobTitle": result.get("jobTitle", ""),
+        "company": result.get("company", ""),
+        "location": result.get("location", ""),
+        "jobDescription": result.get("jobDescription", ""),
+        "requirements": result.get("requirements", []),
+        "skills": result.get("skills", []),
+        "tailoredSummary": result.get("tailoredSummary", ""),
+        "tailoredExperience": result.get("tailoredExperience", []),
+        "tailoredProjects": result.get("tailoredProjects", []),
+        "tailoredSkillsOrder": result.get("tailoredSkillsOrder", []),
+        "atsScore": int(result.get("atsScore", 0)),
+        "matchPercentage": int(result.get("atsMatchPercentage", result.get("matchPercentage", 0))),
+        "matchedKeywords": result.get("matchedKeywords", []),
+        "missingKeywords": result.get("missingKeywords", []),
+        "improvements": result.get("improvements", []),
+        "jobSummary": result.get("jobSummary", ""),
+        "customSections": {},
+    }
+
+    # Optional second call: batch generate custom sections
+    if configured_sections:
+        job_title = out["jobTitle"]
+        job_company = out["company"]
+        job_skills = ", ".join(out["skills"][:10])
+        candidate_name = resume_json.get("contact", {}).get("name", "Candidate")
+        experience_summary = " | ".join(
+            f"{e.get('title','')} at {e.get('company','')}"
+            for e in resume_json.get("experience", [])[:4]
+        )
+
+        sections_template = ", ".join(
+            f'"{s}": "3-4 sentences relevant to {job_title}"'
+            for s in configured_sections
+        )
+
+        custom_prompt = f"""Generate compelling custom resume sections for this job opportunity.
+
+Job: {job_title} at {job_company}
+Skills needed: {job_skills}
+Candidate: {candidate_name}
+Experience: {experience_summary}
+
+Generate 3-4 sentence content for each section showcasing relevant strengths:
+
+Return ONLY valid JSON:
+{{
+  "sections": {{
+    {sections_template}
+  }}
+}}
+
+Each section: specific, substantial (3-4 sentences), aligned with job requirements."""
+
+        custom_result = call_gemini(custom_prompt, temperature=0.1, max_tokens=4096)
+        if "error" not in custom_result and custom_result.get("sections"):
+            for name, content in custom_result["sections"].items():
+                content_str = str(content).strip()
+                if content_str and content_str != "null":
+                    out["customSections"][name] = content_str
+
+    return out
 
 
 def check_resume_completeness(resume: str) -> Dict:

@@ -77,10 +77,15 @@ class ExtractResumeResponse(BaseModel):
 
 
 class TailorResumeResponse(BaseModel):
-    tailoredResume: str = Field(..., min_length=200)
-    optimizationNotes: List[str]
-    estimatedATSScore: int = Field(..., ge=0, le=100)
-    creditsUsed: Literal[2] = 2   # ← changed
+    jobTitle: Optional[str] = None
+    company: Optional[str] = None
+    summary: Optional[str] = None
+    skills: List[str] = Field(default_factory=list)
+    experience: List[Dict] = Field(default_factory=list)
+    projects: List[Dict] = Field(default_factory=list)
+    optimizationNotes: List[str] = Field(default_factory=list)
+    estimatedATSScore: int = Field(default=0, ge=0, le=100)
+    creditsUsed: Literal[2] = 2
 
 
 class AtsScoreResponse(BaseModel):
@@ -128,3 +133,32 @@ class GeminiApiResponse(BaseModel):
     data: Dict  # will contain the specific response model
     creditsUsed: int
     message: str = "Success"
+
+
+# ── Combined analyze + tailor (extension endpoint) ───────────────────────────
+
+class AnalyzeAndTailorRequest(GeminiRequestBase):
+    pageText: str = Field(..., min_length=50, description="Cleaned page text (HTML already stripped)")
+    resume: Dict = Field(..., description="ResumeData JSON object")
+    configuredSections: List[str] = Field(default_factory=list, description="Custom section names to generate")
+
+
+class AnalyzeAndTailorResponse(BaseModel):
+    jobTitle: str = ""
+    company: str = ""
+    location: str = ""
+    jobDescription: str = ""
+    requirements: List[str] = Field(default_factory=list)
+    skills: List[str] = Field(default_factory=list)
+    tailoredSummary: str = ""
+    tailoredExperience: List[Dict] = Field(default_factory=list)   # [{position, newBullets[]}]
+    tailoredProjects: List[Dict] = Field(default_factory=list)     # [{title, newDescription}]
+    tailoredSkillsOrder: List[str] = Field(default_factory=list)
+    atsScore: int = Field(default=0, ge=0, le=100)
+    matchPercentage: int = Field(default=0, ge=0, le=100)
+    matchedKeywords: List[str] = Field(default_factory=list)
+    missingKeywords: List[str] = Field(default_factory=list)
+    improvements: List[str] = Field(default_factory=list)
+    jobSummary: str = ""
+    customSections: Dict[str, str] = Field(default_factory=dict)
+    creditsUsed: int = 3
