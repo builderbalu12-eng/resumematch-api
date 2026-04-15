@@ -274,6 +274,88 @@ async def get_jsearch_resource(admin: str = Depends(require_admin)):
     }
 
 
+@router.get("/resources/jsearch/daily-feed")
+async def get_jsearch_daily_feed(
+    date: Optional[str] = None,   # YYYY-MM-DD, defaults to today
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    admin: str = Depends(require_admin),
+):
+    """Return daily_job_feed entries for a given date with job details."""
+    if not date:
+        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Parse date boundaries in UTC
+    day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    day_end   = day_start.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    total = await mongo.daily_job_feed.count_documents({
+        "created_at": {"$gte": day_start, "$lte": day_end}
+    })
+    skip  = (page - 1) * limit
+
+    cursor = mongo.daily_job_feed.find(
+        {"created_at": {"$gte": day_start, "$lte": day_end}},
+        sort=[("created_at", -1)],
+    ).skip(skip).limit(limit)
+
+    # Look up user emails for display
+    entries = []
+    async for doc in cursor:
+        user_id = doc.get("user_id", "")
+        # Fetch user email for display (mask it)
+        user_email = ""
+        try:
+            from bson import ObjectId
+            user = await mongo.users.find_one({"_id": ObjectId(user_id)}, {"email": 1})
+            if user:
+                e = user.get("email", "")
+                # mask: show first 3 chars + *** + @domain
+                parts = e.split("@")
+                user_email = parts[0][:3] + "***@" + parts[1] if len(parts) == 2 else e[:6] + "***"
+        except Exception:
+            user_email = user_id[:8] + "..."
+
+        jobs = doc.get("jobs", [])
+        # Count jobs by source site
+        site_counts: dict = {}
+        for j in jobs:
+            s = j.get("site", "unknown")
+            site_counts[s] = site_counts.get(s, 0) + 1
+
+        entries.append({
+            "user_email":    user_email,
+            "search_term":   doc.get("search_term", ""),
+            "location":      doc.get("location", ""),
+            "total_jobs":    len(jobs),
+            "site_breakdown": site_counts,
+            "created_at":    doc["created_at"].isoformat() if doc.get("created_at") else "",
+            "jobs": [
+                {
+                    "title":       j.get("title", ""),
+                    "company":     j.get("company", ""),
+                    "location":    j.get("location", ""),
+                    "site":        j.get("site", ""),
+                    "fit_score":   j.get("fit_score", 0),
+                    "job_url":     j.get("job_url", ""),
+                    "is_remote":   j.get("is_remote"),
+                    "description_summary": j.get("description_summary", ""),
+                }
+                for j in jobs
+            ],
+        })
+
+    return {
+        "data": {
+            "date":        date,
+            "total":       total,
+            "page":        page,
+            "total_pages": max(1, (total + limit - 1) // limit),
+            "entries":     entries,
+        }
+    }
+
+
 @router.get("/resources/mongodb")
 async def get_mongodb_resource(admin: str = Depends(require_admin)):
     """Return MongoDB Atlas storage usage using the existing connection."""
