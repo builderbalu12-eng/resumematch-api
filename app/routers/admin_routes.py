@@ -18,7 +18,7 @@ from app.services.gemini_config_service import (
     save_gemini_config,
     AVAILABLE_MODELS,
 )
-from app.services.admin_settings_service import get_default_credits, set_default_credits
+from app.services.admin_settings_service import get_default_credits, set_default_credits, get_app_config, set_app_config
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -34,6 +34,29 @@ class UpdateFeatureCostBody(BaseModel):
 
 class SetDefaultCreditsBody(BaseModel):
     credits: float
+
+
+class SocialLinksUpdate(BaseModel):
+    twitter: Optional[str] = None
+    linkedin: Optional[str] = None
+    github: Optional[str] = None
+    facebook: Optional[str] = None
+    instagram: Optional[str] = None
+    youtube: Optional[str] = None
+
+
+class CollaboratorItem(BaseModel):
+    name: str
+    role: str = ""
+    image_url: str = ""
+
+
+class AppConfigUpdate(BaseModel):
+    app_name: Optional[str] = None
+    support_email: Optional[str] = None
+    logo_url: Optional[str] = None
+    social_links: Optional[SocialLinksUpdate] = None
+    collaborators: Optional[List[CollaboratorItem]] = None
 
 
 class AdminCouponCreate(BaseModel):
@@ -463,3 +486,31 @@ async def delete_plan(
 ):
     """Delete a plan (hard delete — use PATCH is_active=false to soft-disable)."""
     return await PlanController.delete_plan(plan_id, admin)
+
+
+# ── App Config (Branding) ─────────────────────────────────────
+
+@router.get("/settings/app-config")
+async def get_app_config_admin(admin: str = Depends(require_admin)):
+    """Get app branding config (app name, support email, logo, social links, collaborators)."""
+    return {"data": await get_app_config()}
+
+
+@router.patch("/settings/app-config")
+async def update_app_config_admin(
+    body: AppConfigUpdate,
+    admin: str = Depends(require_admin),
+):
+    """Update app branding config (partial update)."""
+    updates = body.model_dump(exclude_unset=True)
+    # Convert SocialLinksUpdate to plain dict if present
+    if "social_links" in updates and updates["social_links"] is not None:
+        updates["social_links"] = {k: v for k, v in updates["social_links"].items() if v is not None}
+    # Convert CollaboratorItem list to plain dicts if present
+    if "collaborators" in updates and updates["collaborators"] is not None:
+        updates["collaborators"] = [
+            {"name": c["name"], "role": c.get("role", ""), "image_url": c.get("image_url", "")}
+            for c in updates["collaborators"]
+        ]
+    result = await set_app_config(updates)
+    return {"data": result}

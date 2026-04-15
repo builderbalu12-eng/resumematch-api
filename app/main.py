@@ -17,6 +17,7 @@ from app.routers import portfolio_routes
 from app.routers import interview_routes
 from app.routers import github_sync_routes
 from app.routers import autoapply_routes
+from app.routers import settings_routes
 
 
 app = FastAPI(
@@ -67,6 +68,7 @@ app.include_router(portfolio_routes.router, prefix="/api")
 app.include_router(interview_routes.router, prefix="/api")
 app.include_router(github_sync_routes.router, prefix="/api")
 app.include_router(autoapply_routes.router, prefix="/api")
+app.include_router(settings_routes.router, prefix="/api")
 
 
 
