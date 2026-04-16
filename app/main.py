@@ -19,6 +19,9 @@ from app.routers import github_sync_routes
 from app.routers import autoapply_routes
 from app.routers import settings_routes
 from app.routers import job_evaluation_routes
+from app.routers import star_routes
+from app.routers import company_research_routes
+from app.routers import outreach_routes
 
 
 app = FastAPI(
@@ -71,6 +74,9 @@ app.include_router(github_sync_routes.router, prefix="/api")
 app.include_router(autoapply_routes.router, prefix="/api")
 app.include_router(settings_routes.router, prefix="/api")
 app.include_router(job_evaluation_routes.router, prefix="/api")
+app.include_router(star_routes.router, prefix="/api")
+app.include_router(company_research_routes.router, prefix="/api")
+app.include_router(outreach_routes.router, prefix="/api")
 
 
 
@@ -103,6 +109,66 @@ async def startup_event():
             "credits_per_unit": 1,
             "unit": "evaluation",
             "description": "AI-powered 6-axis job scoring: CV match, north star, compensation, culture, red flags, posting legitimacy",
+            "is_active": True,
+        })
+
+    # Seed job_followup feature cost if not already present
+    existing_followup = await mongo.credits_on_features.find_one({"feature": "job_followup"})
+    if not existing_followup:
+        await mongo.credits_on_features.insert_one({
+            "feature": "job_followup",
+            "display_name": "Follow-up Generator",
+            "credits_per_unit": 1,
+            "unit": "generation",
+            "description": "AI-generated follow-up email and LinkedIn message draft for a tracked job application",
+            "is_active": True,
+        })
+
+    # Seed company_research feature cost if not already present
+    existing_cr = await mongo.credits_on_features.find_one({"feature": "company_research"})
+    if not existing_cr:
+        await mongo.credits_on_features.insert_one({
+            "feature": "company_research",
+            "display_name": "Company Research",
+            "credits_per_unit": 2,
+            "unit": "report",
+            "description": "AI-generated 6-section pre-interview company intelligence report",
+            "is_active": True,
+        })
+
+    # Seed application_insights feature cost if not already present
+    existing_insights = await mongo.credits_on_features.find_one({"feature": "application_insights"})
+    if not existing_insights:
+        await mongo.credits_on_features.insert_one({
+            "feature": "application_insights",
+            "display_name": "Application Insights",
+            "credits_per_unit": 1,
+            "unit": "generation",
+            "description": "AI-generated observations from your job application patterns",
+            "is_active": True,
+        })
+
+    # Seed outreach_generate feature cost if not already present
+    existing_outreach = await mongo.credits_on_features.find_one({"feature": "outreach_generate"})
+    if not existing_outreach:
+        await mongo.credits_on_features.insert_one({
+            "feature": "outreach_generate",
+            "display_name": "LinkedIn Outreach Generator",
+            "credits_per_unit": 1,
+            "unit": "message",
+            "description": "AI-generated personalized LinkedIn connection message for a specific contact type",
+            "is_active": True,
+        })
+
+    # Seed star_suggest feature cost if not already present
+    existing_star = await mongo.credits_on_features.find_one({"feature": "star_suggest"})
+    if not existing_star:
+        await mongo.credits_on_features.insert_one({
+            "feature": "star_suggest",
+            "display_name": "STAR Story Suggester",
+            "credits_per_unit": 1,
+            "unit": "suggestion",
+            "description": "AI ranks the user's STAR stories by relevance for a specific job description",
             "is_active": True,
         })
 

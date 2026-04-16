@@ -166,5 +166,13 @@ class MongoService:
     def rapidapi_usage_log(self):
         return self.db.rapidapi_usage_log
 
+    @property
+    def job_evaluations(self):
+        return self.db.job_evaluations
+
+    @property
+    def star_stories(self):
+        return self.db.star_stories
+
 
 mongo = MongoService()
