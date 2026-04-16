@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
-from datetime import datetime
+from typing import List, Optional, Any
+from datetime import datetime, timezone
 from bson import ObjectId
 
 from app.middleware.auth import get_current_user
@@ -11,17 +11,22 @@ from app.services.credits_service import CreditsService
 router = APIRouter(tags=["Job Evaluation"])
 
 
-def _uid(current_user) -> str:
+# ── Utility ───────────────────────────────────────────────
+
+def _uid(current_user: Any) -> str:
     if isinstance(current_user, str):
         return current_user
     if isinstance(current_user, dict):
         return str(
-            current_user.get("_id") or current_user.get("id") or current_user.get("user_id") or ""
+            current_user.get("_id")
+            or current_user.get("id")
+            or current_user.get("user_id")
+            or ""
         )
     return str(current_user)
 
 
-# ── Request / Response models ──────────────────────────────
+# ── Pydantic models ────────────────────────────────────────
 
 class EvaluateJobRequest(BaseModel):
     jobUrl: str
@@ -29,27 +34,15 @@ class EvaluateJobRequest(BaseModel):
     company: str
     description: str
     userResumeId: Optional[str] = None
+    # Optional job metadata for ghost-job signals
+    datePosted: Optional[str] = None   # ISO date string or human-readable
+    salary: Optional[str] = None
 
 
-class EvaluationAxis(BaseModel):
-    name: str
-    grade: str
-    score: float
-    reasoning: str
-
-
-class JobEvaluationResult(BaseModel):
-    overallGrade: str
-    overallScore: float
-    verdict: str
-    axes: List[EvaluationAxis]
-    cached: bool = False
-
-
-# ── Helper: fetch resume text ─────────────────────────────
+# ── Resume text helper ─────────────────────────────────────
 
 async def _get_resume_text(user_id: str, resume_id: Optional[str] = None) -> str:
-    query = {"user_id": user_id}
+    query: dict = {"user_id": user_id}
     if resume_id:
         try:
             query["_id"] = ObjectId(resume_id)
@@ -65,104 +58,218 @@ async def _get_resume_text(user_id: str, resume_id: Optional[str] = None) -> str
         parts = []
         for key, val in extracted.items():
             if val:
-                if isinstance(val, list):
-                    parts.append(f"{key}: {', '.join(str(v) for v in val)}")
-                else:
-                    parts.append(f"{key}: {val}")
+                parts.append(
+                    f"{key}: {', '.join(str(v) for v in val)}"
+                    if isinstance(val, list)
+                    else f"{key}: {val}"
+                )
         return "\n".join(parts)
 
     return doc.get("raw_text", "") or ""
 
 
-# ── POST /api/jobs/evaluate ───────────────────────────────
+# ── Ghost-job signal computation ───────────────────────────
+
+def _ghost_job_signals(
+    description: str,
+    date_posted: Optional[str],
+    salary: Optional[str],
+) -> dict:
+    """
+    Pre-compute observable signals before the AI call so Gemini can
+    reason about Posting Legitimacy with concrete data rather than guessing.
+    """
+    signals: dict = {}
+
+    # Days since posted
+    days_since: Optional[int] = None
+    if date_posted:
+        try:
+            # Try ISO format first
+            posted_dt = datetime.fromisoformat(date_posted.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            if posted_dt.tzinfo is None:
+                posted_dt = posted_dt.replace(tzinfo=timezone.utc)
+            days_since = (now - posted_dt).days
+        except Exception:
+            pass
+    signals["days_since_posted"] = days_since  # None = unknown
+
+    # Salary presence
+    signals["salary_listed"] = bool(salary and salary.strip())
+
+    # Description length
+    desc_len = len(description.strip())
+    signals["description_length_chars"] = desc_len
+    signals["description_thin"] = desc_len < 300  # suspiciously short JD
+
+    return signals
+
+
+def _signals_to_text(signals: dict) -> str:
+    lines = []
+    dsp = signals.get("days_since_posted")
+    if dsp is not None:
+        lines.append(f"- Days since posted: {dsp}")
+        if dsp > 60:
+            lines.append("  (WARNING: posted over 60 days ago — possible ghost job)")
+        elif dsp > 30:
+            lines.append("  (CAUTION: posted over 30 days ago)")
+    else:
+        lines.append("- Days since posted: unknown")
+
+    lines.append(f"- Salary listed: {'Yes' if signals['salary_listed'] else 'No'}")
+    lines.append(f"- Job description length: {signals['description_length_chars']} characters"
+                 + (" (very thin — suspicious)" if signals["description_thin"] else ""))
+    return "\n".join(lines)
+
+
+# ── POST /api/jobs/evaluate ────────────────────────────────
 
 @router.post("/jobs/evaluate", response_model=dict)
 async def evaluate_job(
     payload: EvaluateJobRequest,
-    current_user=Depends(get_current_user),
+    current_user: Any = Depends(get_current_user),
 ):
     user_id = _uid(current_user)
     if not user_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # Check cache first
+    # ── 1. Cache check — no credits deducted on hit ────────
     cached_doc = await mongo.job_evaluations.find_one({
         "userId": user_id,
         "jobUrl": payload.jobUrl,
     })
     if cached_doc:
-        cached_doc.pop("_id", None)
-        cached_doc["cached"] = True
-        return {"data": cached_doc}
+        result = cached_doc.get("evaluationResult", {})
+        result["cached"] = True
+        return {"data": result}
 
-    # Check credits
+    # ── 2. Credit deduction — before any AI call ──────────
     cost = await CreditsService.get_feature_cost("job_evaluate")
-    if cost > 0:
-        ok, msg = await CreditsService.deduct_credits(user_id, cost, "job_evaluate")
-        if not ok:
-            raise HTTPException(status_code=402, detail=msg)
+    if cost <= 0:
+        cost = 1.0   # safe default
+    ok, msg = await CreditsService.deduct_credits(user_id, cost, "job_evaluate")
+    if not ok:
+        raise HTTPException(status_code=402, detail=msg)
 
-    # Fetch resume + north star
+    # ── 3. Fetch resume + north star ───────────────────────
     resume_text = await _get_resume_text(user_id, payload.userResumeId)
     user_doc = await mongo.users.find_one({"_id": ObjectId(user_id)})
-    north_star = (user_doc or {}).get("northStar", "") or ""
+    north_star = ((user_doc or {}).get("northStar") or "").strip()
 
-    # Build AI prompt
-    resume_section = f"\n\nCANDIDATE RESUME:\n{resume_text}" if resume_text else ""
-    north_star_section = f"\n\nCANDIDATE CAREER GOALS (North Star):\n{north_star}" if north_star else ""
+    # ── 4. Compute ghost-job signals ───────────────────────
+    signals = _ghost_job_signals(
+        description=payload.description,
+        date_posted=payload.datePosted,
+        salary=payload.salary,
+    )
+    signals_text = _signals_to_text(signals)
 
-    prompt = f"""You are evaluating a job posting for a candidate. Score the job on exactly 6 axes and return ONLY valid JSON.
+    # ── 5. Build prompt ────────────────────────────────────
+    resume_block = (
+        f"\nCandidate's Resume:\n{resume_text[:4000]}\n"
+        if resume_text
+        else "\nCandidate's Resume: Not provided.\n"
+    )
+    north_star_block = (
+        f"\nCandidate's Career Goals (North Star):\n{north_star}\n"
+        if north_star
+        else "\nCandidate's Career Goals (North Star): Not provided — score axis 3.0.\n"
+    )
 
-JOB TITLE: {payload.jobTitle}
-COMPANY: {payload.company}
-JOB DESCRIPTION:
-{payload.description[:3000]}{resume_section}{north_star_section}
+    prompt = f"""You are a job evaluation assistant. Evaluate this job for the candidate and return ONLY valid JSON.
+{resume_block}{north_star_block}
+Job Title: {payload.jobTitle}
+Company: {payload.company}
+Job Description:
+{payload.description[:3000]}
 
-Evaluate the job on these 6 axes:
-1. cv_match — How well does the candidate's resume match the JD requirements?
-2. north_star — Does this role advance the candidate's stated career goals? (if no goals given, score 3.0)
-3. compensation — Is the compensation competitive for this role/location/level based on market knowledge?
-4. cultural_signals — What does the JD language signal about company culture?
-5. red_flags — Are there stressful signals (urgent hire, vague role, over-leveled YOE requirements)?
-6. posting_legitimacy — Is this a real, active, recently posted job? Check for signs of ghost jobs.
+Ghost-Job Signals (use these facts when scoring Posting Legitimacy):
+{signals_text}
 
-Return ONLY this JSON (no markdown, no explanation):
+Evaluate on exactly 6 axes. Return this JSON structure (no markdown, no extra text):
 {{
   "overallGrade": "B+",
   "overallScore": 3.8,
-  "verdict": "Worth applying — strong CV match with minor concerns",
+  "verdict": "Worth applying",
   "axes": [
-    {{"name": "CV Match", "key": "cv_match", "grade": "A", "score": 4.5, "reasoning": "one sentence"}},
-    {{"name": "North Star", "key": "north_star", "grade": "B", "score": 3.5, "reasoning": "one sentence"}},
-    {{"name": "Compensation", "key": "compensation", "grade": "C+", "score": 2.8, "reasoning": "one sentence"}},
-    {{"name": "Cultural Signals", "key": "cultural_signals", "grade": "B+", "score": 3.7, "reasoning": "one sentence"}},
-    {{"name": "Red Flags", "key": "red_flags", "grade": "A-", "score": 4.2, "reasoning": "one sentence"}},
-    {{"name": "Posting Legitimacy", "key": "posting_legitimacy", "grade": "B", "score": 3.5, "reasoning": "one sentence"}}
+    {{
+      "name": "CV Match",
+      "grade": "A",
+      "score": 4.5,
+      "reasoning": "One sentence explanation."
+    }},
+    {{
+      "name": "North Star Alignment",
+      "grade": "B",
+      "score": 3.5,
+      "reasoning": "One sentence explanation."
+    }},
+    {{
+      "name": "Compensation vs Market",
+      "grade": "C",
+      "score": 2.5,
+      "reasoning": "One sentence explanation."
+    }},
+    {{
+      "name": "Cultural Signals",
+      "grade": "B+",
+      "score": 3.8,
+      "reasoning": "One sentence explanation."
+    }},
+    {{
+      "name": "Red Flags",
+      "grade": "A-",
+      "score": 4.2,
+      "reasoning": "One sentence explanation."
+    }},
+    {{
+      "name": "Posting Legitimacy",
+      "grade": "B",
+      "score": 3.5,
+      "reasoning": "One sentence explanation."
+    }}
   ]
-}}"""
+}}
+Grades: A+, A, A-, B+, B, B-, C+, C, C-, D, F
+Score: 1.0–5.0 (one decimal place)"""
 
+    # ── 6. AI call ─────────────────────────────────────────
     from app.services.ai_provider_service import call_ai
-    result = call_ai(prompt, temperature=0.2, max_tokens=1024)
+    ai_result = call_ai(prompt, temperature=0.2, max_tokens=1200)
 
-    if "error" in result:
-        if cost > 0:
-            await CreditsService.refund_credits(user_id, cost, "Job evaluation failed")
-        raise HTTPException(status_code=500, detail=result["error"])
+    if "error" in ai_result:
+        await CreditsService.refund_credits(user_id, cost, "Job evaluation AI call failed")
+        raise HTTPException(status_code=500, detail=ai_result["error"])
 
-    # Cache the result
-    doc = {
+    # ── 7. Validate axes count (AI sometimes drops one) ───
+    axes = ai_result.get("axes", [])
+    if len(axes) != 6:
+        await CreditsService.refund_credits(user_id, cost, "Job evaluation returned malformed response")
+        raise HTTPException(
+            status_code=500,
+            detail="AI returned an unexpected evaluation format. Please try again."
+        )
+
+    # ── 8. Build evaluation result payload ─────────────────
+    evaluation_result = {
+        "overallGrade": ai_result.get("overallGrade", "C"),
+        "overallScore": float(ai_result.get("overallScore", 3.0)),
+        "verdict": ai_result.get("verdict", ""),
+        "axes": axes,
+        "cached": False,
+    }
+
+    # ── 9. Persist to cache ────────────────────────────────
+    await mongo.job_evaluations.insert_one({
         "userId": user_id,
         "jobUrl": payload.jobUrl,
         "jobTitle": payload.jobTitle,
         "company": payload.company,
-        "overallGrade": result.get("overallGrade", "C"),
-        "overallScore": result.get("overallScore", 3.0),
-        "verdict": result.get("verdict", ""),
-        "axes": result.get("axes", []),
-        "cached": False,
+        "evaluationResult": evaluation_result,
+        "ghostSignals": signals,
         "createdAt": datetime.utcnow(),
-    }
-    await mongo.job_evaluations.insert_one(doc)
-    doc.pop("_id", None)
+    })
 
-    return {"data": doc}
+    return {"data": evaluation_result}
