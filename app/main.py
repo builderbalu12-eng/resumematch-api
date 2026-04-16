@@ -18,6 +18,7 @@ from app.routers import interview_routes
 from app.routers import github_sync_routes
 from app.routers import autoapply_routes
 from app.routers import settings_routes
+from app.routers import job_evaluation_routes
 
 
 app = FastAPI(
@@ -69,6 +70,7 @@ app.include_router(interview_routes.router, prefix="/api")
 app.include_router(github_sync_routes.router, prefix="/api")
 app.include_router(autoapply_routes.router, prefix="/api")
 app.include_router(settings_routes.router, prefix="/api")
+app.include_router(job_evaluation_routes.router, prefix="/api")
 
 
 
@@ -91,6 +93,18 @@ async def startup_event():
 
     from app.services.ai_provider_service import init_active_provider
     await init_active_provider()
+
+    # Seed job_evaluate feature cost if not already present
+    existing = await mongo.credits_on_features.find_one({"feature": "job_evaluate"})
+    if not existing:
+        await mongo.credits_on_features.insert_one({
+            "feature": "job_evaluate",
+            "display_name": "Job Evaluation (6-Axis)",
+            "credits_per_unit": 1,
+            "unit": "evaluation",
+            "description": "AI-powered 6-axis job scoring: CV match, north star, compensation, culture, red flags, posting legitimacy",
+            "is_active": True,
+        })
 
     # Ensure TTL index exists for daily_job_feed
     from app.services.daily_job_refresh_service import ensure_ttl_index, run_daily_job_refresh

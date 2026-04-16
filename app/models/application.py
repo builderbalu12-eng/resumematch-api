@@ -1,6 +1,11 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
 from datetime import datetime
+
+PIPELINE_STAGES = {
+    "evaluated", "applied", "responded", "contacted",
+    "interview", "offer", "rejected", "discarded"
+}
 
 
 class ApplicationRecordCreate(BaseModel):
@@ -14,6 +19,34 @@ class ApplicationRecordCreate(BaseModel):
     matchedKeywords: List[str] = Field(default_factory=list)
     missingKeywords: List[str] = Field(default_factory=list)
     status: str = "applied"
+    # Tracker fields
+    pipelineStage: str = "evaluated"
+    notes: str = ""
+    followUpDate: Optional[str] = None
+    evaluationGrade: str = ""
+    compensationNotes: str = ""
+
+    @field_validator("pipelineStage")
+    @classmethod
+    def validate_pipeline_stage(cls, v: str) -> str:
+        if v not in PIPELINE_STAGES:
+            raise ValueError(f"pipelineStage must be one of: {', '.join(sorted(PIPELINE_STAGES))}")
+        return v
+
+
+class ApplicationRecordUpdate(BaseModel):
+    pipelineStage: Optional[str] = None
+    notes: Optional[str] = None
+    followUpDate: Optional[str] = None
+    evaluationGrade: Optional[str] = None
+    compensationNotes: Optional[str] = None
+
+    @field_validator("pipelineStage")
+    @classmethod
+    def validate_pipeline_stage(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in PIPELINE_STAGES:
+            raise ValueError(f"pipelineStage must be one of: {', '.join(sorted(PIPELINE_STAGES))}")
+        return v
 
 
 class ApplicationRecordOut(ApplicationRecordCreate):

@@ -41,8 +41,9 @@ class UserResponse(BaseModel):
     auth_provider: str
     telegram_linked:  bool          = False
     telegram_chat_id: Optional[str] = None
-    has_payments:     bool          = False    # ✅ added
+    has_payments:     bool          = False
     is_admin:         bool          = False
+    northStar:        Optional[str] = None
 
     class Config:
         populate_by_name = True
@@ -51,6 +52,7 @@ class UserResponse(BaseModel):
 class UserUpdate(BaseModel):
     firstName: Optional[str] = None
     lastName:  Optional[str] = None
+    northStar: Optional[str] = None
     # email is NOT here — email cannot be changed ever
 
 
