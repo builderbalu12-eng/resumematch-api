@@ -11,14 +11,14 @@ from datetime import datetime
 import json
 import logging
 from typing import Dict, Any, Optional
-import google.generativeai as genai
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-# Configure Gemini once
-genai.configure(api_key=settings.gemini_api_key)
-MODEL = settings.gemini_model
-logger.info(f"Gemini initialized with model: {MODEL}")
+
+
+def _call_ai(prompt, temperature=1.0, max_tokens=8192):
+    from app.services.ai_provider_service import call_ai
+    return call_ai(prompt, temperature=temperature, max_tokens=max_tokens)
 
 class ResumeGenerator:
     """
@@ -245,7 +245,7 @@ class ResumeGenerator:
     """
 
         try:
-            improved = call_gemini(prompt, temperature=0.25, max_tokens=3000)
+            improved = _call_ai(prompt, temperature=0.25, max_tokens=3000)
             improved_content = improved.get("content", improved)  # in case model returns flat dict
 
             # Merge back (preserve original structure where possible)
@@ -277,7 +277,7 @@ class ResumeGenerator:
     Job: {job_description}
     """
 
-        keywords_data = call_gemini(parse_prompt, temperature=0.1, max_tokens=600)
+        keywords_data = _call_ai(parse_prompt, temperature=0.1, max_tokens=600)
         keywords = set(keywords_data.get("keywords", []) + keywords_data.get("must_have_skills", []))
 
         # Now enhance content with keywords

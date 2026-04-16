@@ -79,3 +79,4 @@ websockets==16.0
 reportlab==4.2.5
 google-analytics-data==0.18.14
 apscheduler==3.10.4
+anthropic>=0.40.0

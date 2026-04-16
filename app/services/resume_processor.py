@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 genai.configure(api_key=settings.gemini_api_key)
 MODEL = settings.gemini_model
 
+# Lazy import to avoid circular imports — used by call_ai() in ai_provider_service
+def _call_ai(prompt, temperature=1.0, max_tokens=8192, model=None):
+    from app.services.ai_provider_service import call_ai
+    return call_ai(prompt, temperature=temperature, max_tokens=max_tokens, model=model)
+
 logger.info(f"Gemini model loaded: {MODEL}")
 
 # Safety limits
@@ -209,7 +214,7 @@ Raw resume text:
 {document_text}
 """
 
-    return call_gemini(prompt, temperature=0.0, max_tokens=8192)
+    return _call_ai(prompt, temperature=0.0, max_tokens=8192)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -237,7 +242,7 @@ Resume:
 Job Description:
 {job_description}
 """
-    return call_gemini(prompt, temperature=0.15)
+    return _call_ai(prompt, temperature=0.15)
 
 
 def tailor_resume(resume: str, job_description: str) -> Dict:
@@ -288,7 +293,7 @@ Original Resume:
 Job Description:
 {job_description}
 """
-    result = call_gemini(prompt, temperature=0.0)
+    result = _call_ai(prompt, temperature=0.0)
 
     # Cross-validate ATS score: rebuild plain text from structured result for objective scoring
     try:
@@ -348,7 +353,7 @@ Resume:
 Job Description:
 {job_description}
 """
-    return call_gemini(prompt, temperature=0.15)
+    return _call_ai(prompt, temperature=0.15)
 
 
 def parse_job_description(job_description: str) -> Dict:
@@ -376,7 +381,7 @@ IMPORTANT: Extract the REAL values from the text. Never use "Job Position", "Com
 Job posting:
 {job_description}
 """
-    return call_gemini(prompt, temperature=0.1)
+    return _call_ai(prompt, temperature=0.1)
 
 
 def generate_cover_letter(resume: str, job_description: str) -> Dict:
@@ -407,7 +412,7 @@ Resume:
 Job Description:
 {job_description}
 """
-    return call_gemini(prompt, temperature=0.35)
+    return _call_ai(prompt, temperature=0.35)
 
 
 def analyze_and_tailor(page_text: str, resume_json: dict, configured_sections: list) -> dict:
@@ -472,7 +477,7 @@ Job posting:
 Resume:
 {resume_str}"""
 
-    result = call_gemini(prompt, temperature=0.0, max_tokens=8192)
+    result = _call_ai(prompt, temperature=0.0, max_tokens=8192)
 
     if "error" in result:
         return result
@@ -532,7 +537,7 @@ Return ONLY valid JSON:
 
 Each section: specific, substantial (3-4 sentences), aligned with job requirements."""
 
-        custom_result = call_gemini(custom_prompt, temperature=0.1, max_tokens=4096)
+        custom_result = _call_ai(custom_prompt, temperature=0.1, max_tokens=4096)
         if "error" not in custom_result and custom_result.get("sections"):
             for name, content in custom_result["sections"].items():
                 content_str = str(content).strip()
@@ -567,4 +572,4 @@ Return **only valid JSON** with these exact keys:
 Resume text:
 {resume}
 """
-    return call_gemini(prompt, temperature=0.2)
+    return _call_ai(prompt, temperature=0.2)

@@ -86,6 +86,12 @@ async def startup_event():
     from app.services.gemini_config_service import init_gemini_config
     await init_gemini_config()
 
+    from app.services.claude_config_service import init_claude_config
+    await init_claude_config()
+
+    from app.services.ai_provider_service import init_active_provider
+    await init_active_provider()
+
     # Ensure TTL index exists for daily_job_feed
     from app.services.daily_job_refresh_service import ensure_ttl_index, run_daily_job_refresh
     await ensure_ttl_index()

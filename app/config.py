@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     gemini_temperature_default: float = 0.2         # lower = more deterministic
     gemini_max_tokens_default: int = 2048           # safe limit for flash models
 
+    # ── Claude / Anthropic (AI features) ─────────────────────────
+    claude_api_key: str = ""                        # set CLAUDE_API_KEY in .env
+    claude_model: str = "claude-sonnet-4-6"         # safe default
+
     # ── Resume feature specifics ─────────────────────────────────
     resume_template_admins: str = ""   # comma-separated emails
     admin_emails: str = ""             # comma-separated, for admin dashboard

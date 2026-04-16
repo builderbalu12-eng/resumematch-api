@@ -588,22 +588,15 @@ class AIChatService:
             }
             system_prompt = system_prompts.get(intent, system_prompts["general_chat"])
 
+            from app.services.ai_provider_service import call_ai_chat_async
             from app.services.gemini_config_service import get_active_config_sync
             _gcfg = get_active_config_sync()
-            model = genai.GenerativeModel(
-                model_name=_gcfg["model"],
-                system_instruction=(
-                    f"{_APP_CONTEXT}\n\n"
-                    f"{system_prompt}\n\n"
-                    "Only answer job, resume, career, freelancing, and hiring related questions. "
-                    "Never go outside this domain."
-                ),
-                generation_config={
-                    "temperature": _gcfg["temperature"],
-                    "max_output_tokens": _gcfg["max_tokens"],
-                    "top_p": 0.8,
-                    "top_k": 40,
-                },
+
+            system_instruction = (
+                f"{_APP_CONTEXT}\n\n"
+                f"{system_prompt}\n\n"
+                "Only answer job, resume, career, freelancing, and hiring related questions. "
+                "Never go outside this domain."
             )
 
             history = []
@@ -611,12 +604,13 @@ class AIChatService:
                 role = "user" if msg.role.value == "user" else "model"
                 history.append({"role": role, "parts": [msg.content]})
 
-            while history and history[0]["role"] != "user":
-                history.pop(0)
-
-            chat = model.start_chat(history=history)
-            resp = await chat.send_message_async(message)
-            return resp.text.strip()
+            return await call_ai_chat_async(
+                history=history,
+                user_message=message,
+                system_instruction=system_instruction,
+                temperature=_gcfg["temperature"],
+                max_tokens=_gcfg["max_tokens"],
+            )
 
         except Exception as e:
             print(f"Conversational AI error: {e}")

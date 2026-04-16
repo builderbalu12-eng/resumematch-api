@@ -18,6 +18,15 @@ from app.services.gemini_config_service import (
     save_gemini_config,
     AVAILABLE_MODELS,
 )
+from app.services.claude_config_service import (
+    get_claude_config,
+    save_claude_config,
+    AVAILABLE_MODELS as CLAUDE_MODELS,
+)
+from app.services.ai_provider_service import (
+    get_active_provider,
+    set_active_provider,
+)
 from app.services.admin_settings_service import get_default_credits, set_default_credits, get_app_config, set_app_config
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -209,8 +218,27 @@ class GeminiConfigUpdate(BaseModel):
     max_tokens: Optional[int] = None
 
 
+class ClaudeConfigUpdate(BaseModel):
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+
+
+class ActiveProviderUpdate(BaseModel):
+    provider: str  # "gemini" | "claude"
+
+
+# ── Gemini model list (original route kept + new named route) ─
+
 @router.get("/resources/models")
 async def list_gemini_models(admin: str = Depends(require_admin)):
+    """Return the list of available Gemini models (legacy route, kept for compatibility)."""
+    return {"data": AVAILABLE_MODELS}
+
+
+@router.get("/resources/models/gemini")
+async def list_gemini_models_named(admin: str = Depends(require_admin)):
     """Return the list of available Gemini models with free-tier limits."""
     return {"data": AVAILABLE_MODELS}
 
@@ -271,6 +299,92 @@ async def update_gemini_config(
         raise HTTPException(400, "No fields provided to update")
     await save_gemini_config(update, admin_email=admin)
     return {"success": True, "message": "Gemini config updated and applied immediately."}
+
+
+# ── Claude Resource ───────────────────────────────────────────
+
+@router.get("/resources/models/claude")
+async def list_claude_models(admin: str = Depends(require_admin)):
+    """Return the list of available Claude models."""
+    return {"data": CLAUDE_MODELS}
+
+
+@router.get("/resources/claude")
+async def get_claude_resource(admin: str = Depends(require_admin)):
+    """Return current Claude config + today's usage count from credits_log."""
+    cfg = await get_claude_config()
+
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_count = await mongo.credits_log.count_documents({
+        "type": "deduction",
+        "provider": "claude",
+        "created_at": {"$gte": today_start},
+    })
+
+    thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+    pipeline = [
+        {"$match": {"type": "deduction", "provider": "claude", "created_at": {"$gte": thirty_days_ago}}},
+        {"$group": {
+            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}},
+            "count": {"$sum": 1},
+        }},
+        {"$sort": {"_id": 1}},
+    ]
+    history_cursor = mongo.credits_log.aggregate(pipeline)
+    history = [{"date": d["_id"], "count": d["count"]} async for d in history_cursor]
+
+    return {
+        "data": {
+            "api_key_masked": cfg["api_key"][:8] + "•" * 20 if cfg["api_key"] else "",
+            "api_key_full":   cfg["api_key"],
+            "model":          cfg["model"],
+            "temperature":    cfg["temperature"],
+            "max_tokens":     cfg["max_tokens"],
+            "updated_at":     cfg["updated_at"].isoformat() if cfg["updated_at"] else None,
+            "updated_by":     cfg["updated_by"],
+            "today_usage":    today_count,
+            "usage_history":  history,
+            "available_models": CLAUDE_MODELS,
+        }
+    }
+
+
+@router.patch("/resources/claude")
+async def update_claude_config(
+    body: ClaudeConfigUpdate,
+    admin: str = Depends(require_admin),
+):
+    """Save new Claude API key / model / settings. Takes effect immediately."""
+    update = body.model_dump(exclude_none=True)
+    if not update:
+        raise HTTPException(400, "No fields provided to update")
+    await save_claude_config(update, admin_email=admin)
+    return {"success": True, "message": "Claude config updated and applied immediately."}
+
+
+# ── Active AI Provider ────────────────────────────────────────
+
+@router.get("/resources/active-provider")
+async def get_active_ai_provider(admin: str = Depends(require_admin)):
+    """Return which AI provider is currently active (gemini or claude)."""
+    provider = await get_active_provider()
+    return {"data": {"provider": provider}}
+
+
+@router.patch("/resources/active-provider")
+async def update_active_ai_provider(
+    body: ActiveProviderUpdate,
+    admin: str = Depends(require_admin),
+):
+    """Switch the active AI provider. Takes effect immediately for all AI features."""
+    if body.provider not in ("gemini", "claude"):
+        raise HTTPException(400, "provider must be 'gemini' or 'claude'")
+    await set_active_provider(body.provider, admin_email=admin)
+    return {
+        "success":  True,
+        "provider": body.provider,
+        "message":  f"Switched to {body.provider}. All AI features now use {body.provider.capitalize()}.",
+    }
 
 
 @router.get("/resources/jsearch")

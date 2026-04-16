@@ -1,4 +1,3 @@
-import google.generativeai as genai
 from typing import Literal
 
 
@@ -15,35 +14,17 @@ IntentType = Literal[
     "out_of_scope"
 ]
 
-# Gemini is configured at startup via init_gemini_config() in main.py.
-
 
 async def classify_intent(message: str) -> IntentType:
     """
-    Classify user intent using Gemini AI.
-
-    Args:
-        message: User message to classify
-
-    Returns:
-        Intent classification as string
+    Classify user intent using the active AI provider (Gemini or Claude).
     """
     if not message or not isinstance(message, str):
         return "out_of_scope"
 
     try:
-        from app.services.gemini_config_service import get_active_config_sync
-        _gcfg = get_active_config_sync()
-        model = genai.GenerativeModel(
-            model_name=_gcfg["model"],
-            generation_config={
-                "temperature": 0.1,  # Low temperature for consistent classification
-                "max_output_tokens": 50,
-                "top_p": 0.8,
-                "top_k": 40
-            }
-        )
-        
+        from app.services.ai_provider_service import call_ai_text_async
+
         prompt = f"""You are classifying messages for ZenLead — an app with these specific features:
 1. find_jobs: searches live job listings (Naukri, LinkedIn, Indeed)
 2. find_leads: finds local businesses on Google Maps (gyms, salons, restaurants, jewellers, clinics, shops, etc.)
@@ -75,8 +56,8 @@ Message: "{message}"
 
 Respond with ONLY the intent name, nothing else. Intent:"""
         
-        response = await model.generate_content_async(prompt)
-        intent = response.text.strip().lower()
+        intent = await call_ai_text_async(prompt, temperature=0.1, max_tokens=50)
+        intent = intent.lower()
         
         # Clean up the response and validate
         valid_intents = {

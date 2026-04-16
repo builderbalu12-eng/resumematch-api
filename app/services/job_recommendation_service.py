@@ -12,8 +12,6 @@ import httpx
 import pandas as pd
 from bs4 import BeautifulSoup
 from bson import ObjectId
-import google.generativeai as genai
-
 from app.config import settings
 from app.services.mongo import mongo
 
@@ -312,7 +310,7 @@ def _scrape_naukri_raw_sync(
 
 
 # ─────────────────────────────────────────
-# GEMINI RANKING + SUMMARIZATION
+# AI RANKING + SUMMARIZATION
 # ─────────────────────────────────────────
 def _rank_and_summarize_sync(
     resume_text: str,
@@ -320,8 +318,7 @@ def _rank_and_summarize_sync(
     top_n:       int,
 ) -> List[Dict[str, Any]]:
 
-    genai.configure(api_key=settings.gemini_api_key)
-    model = genai.GenerativeModel(settings.gemini_model)
+    from app.services.ai_provider_service import call_ai
 
     compact = []
     for i, j in enumerate(jobs, start=1):
@@ -382,14 +379,10 @@ JOBS LIST:
 {json.dumps(compact, ensure_ascii=False)}
 """.strip()
 
-    resp = model.generate_content(prompt)
-    raw  = resp.text.strip()
+    data = call_ai(prompt, temperature=0.2, max_tokens=4096)
+    if "error" in data:
+        raise RuntimeError(f"AI ranking failed: {data.get('message', 'unknown error')}")
 
-    m = re.search(r"\{.*\}", raw, flags=re.S)
-    if not m:
-        raise RuntimeError(f"Gemini returned no JSON.\nRaw:\n{raw}")
-
-    data   = json.loads(m.group(0))
     ranked = data.get("ranked", [])
 
     by_id    = {j["id"]: j for j in compact}
