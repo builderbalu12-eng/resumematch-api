@@ -30,6 +30,12 @@ async def list_applications(
     return {"applications": docs}
 
 
+PIPELINE_STAGES_ORDER = [
+    "evaluated", "applied", "responded", "contacted",
+    "interview", "offer", "rejected", "discarded",
+]
+
+
 @router.get("/applications/stats", response_model=dict)
 async def get_application_stats(
     current_user: str = Depends(get_current_user),
@@ -40,27 +46,52 @@ async def get_application_stats(
             "$group": {
                 "_id": "$pipelineStage",
                 "count": {"$sum": 1},
-                "avg_ats": {"$avg": "$matchPercentage"},
+                # $avg returns null automatically when there are no docs,
+                # but we need it to be null (None) for stages with 0 apps.
+                # matchPercentage of 0 should not skew the average, so only
+                # average docs where matchPercentage > 0.
+                "sum_ats": {"$sum": "$matchPercentage"},
+                "count_with_ats": {
+                    "$sum": {
+                        "$cond": [{"$gt": ["$matchPercentage", 0]}, 1, 0]
+                    }
+                },
+                "sum_ats_nonzero": {
+                    "$sum": {
+                        "$cond": [
+                            {"$gt": ["$matchPercentage", 0]},
+                            "$matchPercentage",
+                            0,
+                        ]
+                    }
+                },
             }
         },
     ]
     raw = await mongo.applications.aggregate(pipeline).to_list(None)
 
-    stages_order = ["evaluated", "applied", "responded", "contacted", "interview", "offer", "rejected", "discarded"]
-    by_stage = {r["_id"]: {"count": r["count"], "avg_ats": round(r["avg_ats"] or 0, 1)} for r in raw}
+    # Build lookup by stage name
+    by_stage: dict = {}
+    for r in raw:
+        stage = r["_id"] or "evaluated"
+        count_with_ats = r.get("count_with_ats", 0)
+        avg_ats = (
+            round(r["sum_ats_nonzero"] / count_with_ats, 1)
+            if count_with_ats > 0
+            else None
+        )
+        by_stage[stage] = {"count": r["count"], "avg_ats": avg_ats}
 
     total = sum(v["count"] for v in by_stage.values())
 
-    stages = [
-        {
-            "stage": s,
-            "count": by_stage.get(s, {}).get("count", 0),
-            "avg_ats": by_stage.get(s, {}).get("avg_ats", 0.0),
-        }
-        for s in stages_order
-    ]
+    stage_breakdown = {s: by_stage.get(s, {}).get("count", 0) for s in PIPELINE_STAGES_ORDER}
+    avg_ats_by_stage = {s: by_stage.get(s, {}).get("avg_ats", None) for s in PIPELINE_STAGES_ORDER}
 
-    return {"total": total, "stages": stages}
+    return {
+        "totalApplications": total,
+        "stageBreakdown": stage_breakdown,
+        "avgAtsScoreByStage": avg_ats_by_stage,
+    }
 
 
 @router.patch("/applications/{app_id}", response_model=dict)
