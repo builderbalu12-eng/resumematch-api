@@ -23,6 +23,7 @@ from app.routers import star_routes
 from app.routers import company_research_routes
 from app.routers import outreach_routes
 from app.routers import compensation_routes
+from app.routers import gmail_routes
 
 
 app = FastAPI(
@@ -79,6 +80,8 @@ app.include_router(star_routes.router, prefix="/api")
 app.include_router(company_research_routes.router, prefix="/api")
 app.include_router(outreach_routes.router, prefix="/api")
 app.include_router(compensation_routes.router, prefix="/api")
+app.include_router(gmail_routes.router, prefix="/api")
+app.include_router(gmail_routes.gmail_callback_router)   # no /api prefix (OAuth callback)
 
 
 
@@ -183,6 +186,18 @@ async def startup_event():
             "credits_per_unit": 2,
             "unit": "research",
             "description": "AI market rate lookup: salary range, verdict, and rationale for a given role and location",
+            "is_active": True,
+        })
+
+    # Seed lead_analyze feature cost if not already present
+    existing_analyze = await mongo.credits_on_features.find_one({"feature": "lead_analyze"})
+    if not existing_analyze:
+        await mongo.credits_on_features.insert_one({
+            "feature": "lead_analyze",
+            "display_name": "Lead AI Insight",
+            "credits_per_unit": 1,
+            "unit": "analysis",
+            "description": "AI-powered outreach insight for a business lead based on Google Maps data",
             "is_active": True,
         })
 

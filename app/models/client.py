@@ -76,6 +76,7 @@ class ClientOut(BaseModel):
     tags: Optional[List[str]] = []
     notes: Optional[str] = None
     social_links: Optional[Dict[str, str]] = {}
+    ai_insight: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

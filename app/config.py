@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     google_client_id: str
     google_client_secret: str
     google_redirect_uri: str
+    gmail_redirect_uri: str = ""    # e.g. http://localhost:8000/auth/gmail/callback
 
     # ── Frontend / URLs ──────────────────────────────────────────
     frontend_uri: str = ""

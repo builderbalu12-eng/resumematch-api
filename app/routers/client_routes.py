@@ -159,6 +159,60 @@ async def find_leads(
 
 
 
+# ─── AI Analyze Lead ──────────────────────────────────────
+@router.post("/{client_id}/analyze", response_model=Dict)
+async def analyze_lead(
+    client_id: str,
+    current_user: str = Depends(get_current_user)
+):
+    """Generate an AI outreach insight for a lead. Costs 1 credit. Cached on lead doc."""
+    from app.services.mongo import mongo
+    from app.services.credits_service import CreditsService
+    from app.services.ai_provider_service import call_ai_text_async
+
+    # Check cached insight first
+    lead = await mongo.clients.find_one({"_id": ObjectId(client_id), "owner_id": current_user})
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+
+    if lead.get("ai_insight"):
+        return {"success": True, "insight": lead["ai_insight"], "cached": True}
+
+    # Deduct 1 credit
+    cost = await CreditsService.get_feature_cost("lead_analyze")
+    success, msg = await CreditsService.deduct_credits(current_user, float(cost))
+    if not success:
+        raise HTTPException(400, msg)
+
+    await CreditsService.log_deduction(
+        user_id=current_user,
+        amount=float(cost),
+        feature="lead_analyze",
+        function_name="analyze_lead",
+        description=f"AI insight for lead: {lead.get('name', client_id)}"
+    )
+
+    prompt = (
+        f"Analyze this local business for a freelancer or agency selling web design / digital marketing services.\n\n"
+        f"Business: {lead.get('name', 'Unknown')}\n"
+        f"Category: {lead.get('category', 'Unknown')}\n"
+        f"Address: {lead.get('address', 'Unknown')}\n"
+        f"Google Rating: {lead.get('rating', 'N/A')} ({lead.get('rating_count', 0)} reviews)\n"
+        f"Has Website: {'Yes' if lead.get('has_website') else 'No'}\n\n"
+        "Suggest the best outreach angle. What pain point should be highlighted? "
+        "What service would most benefit them? Be specific and concise (3-4 sentences)."
+    )
+
+    insight = await call_ai_text_async(prompt)
+
+    await mongo.clients.update_one(
+        {"_id": ObjectId(client_id)},
+        {"$set": {"ai_insight": insight}}
+    )
+
+    return {"success": True, "insight": insight, "cached": False}
+
+
 # ─── Get Find Leads Credit Cost ───────────────────────────
 @router.get("/credits/find-leads", response_model=Dict)
 async def get_credits_on_find_leads(

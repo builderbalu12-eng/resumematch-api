@@ -23,6 +23,10 @@ class User(BaseModel):
     telegram_chat_id:    Optional[str] = None
     telegram_linked:     bool          = False
     telegram_link_token: Optional[str] = None
+    gmail_access_token:  Optional[str] = None
+    gmail_refresh_token: Optional[str] = None
+    gmail_email:         Optional[str] = None
+    gmail_connected:     bool          = False
 
 
 class UserCreate(BaseModel):
@@ -44,6 +48,8 @@ class UserResponse(BaseModel):
     has_payments:     bool          = False
     is_admin:         bool          = False
     northStar:        Optional[str] = None
+    gmail_connected:  bool          = False
+    gmail_email:      Optional[str] = None
 
     class Config:
         populate_by_name = True
