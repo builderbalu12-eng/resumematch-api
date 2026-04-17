@@ -24,6 +24,7 @@ class ApplicationRecordCreate(BaseModel):
     notes: str = ""
     followUpDate: Optional[str] = None
     evaluationGrade: str = ""
+    evaluationScore: float = 0.0
     compensationNotes: str = ""
 
     @field_validator("pipelineStage")
@@ -39,6 +40,7 @@ class ApplicationRecordUpdate(BaseModel):
     notes: Optional[str] = None
     followUpDate: Optional[str] = None
     evaluationGrade: Optional[str] = None
+    evaluationScore: Optional[float] = None
     compensationNotes: Optional[str] = None
 
     @field_validator("pipelineStage")

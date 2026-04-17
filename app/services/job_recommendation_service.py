@@ -355,6 +355,7 @@ SCORING RULES:
 - missing_keywords    : skills/tools JD requires but absent from resume
 - risk_flags          : e.g. "requires 5+ yrs", "on-site only", "niche domain mismatch"
 - description_summary : 1–2 plain English sentences about the role
+- archetype           : one of exactly these 7 values: "AI Platform / LLMOps", "Agentic / Automation", "Technical AI PM", "Solutions Architect", "Forward Deployed", "Transformation Lead", "General"
 
 OUTPUT JSON SCHEMA (strict — return ONLY this):
 {{
@@ -363,6 +364,7 @@ OUTPUT JSON SCHEMA (strict — return ONLY this):
       "id": 1,
       "fit_score": 85,
       "best_role_label": "Full-stack Developer",
+      "archetype": "General",
       "description_summary": "Build React + Node.js apps for fintech clients. Involves REST APIs, PostgreSQL, and CI/CD.",
       "matched_keywords": ["Node.js", "React", "PostgreSQL"],
       "missing_keywords": ["GraphQL"],

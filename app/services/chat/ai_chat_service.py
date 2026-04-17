@@ -92,6 +92,22 @@ def _quick_classify(message: str) -> Optional[str]:
     if re.search(r'tailor|customiz|optimis|optimiz', msg) and 'resum' in msg:
         return "tailor_resume"
 
+    # evaluate_job
+    if re.search(r'\bevaluat|should i apply|rate this job|score this job|is this job', msg):
+        return "evaluate_job"
+
+    # generate_followup
+    if re.search(r'follow.?up|follow-up email|write.*message.*appli|message.*follow', msg):
+        return "generate_followup"
+
+    # company_research
+    if re.search(r'research (the )?company|research .{1,40} (before|for) interview|prepare for interview at|tell me about .{1,40} culture|company intel', msg):
+        return "company_research"
+
+    # generate_outreach
+    if re.search(r'linkedin message|outreach message|message the hiring|message.*recruiter|connect with.*at\b', msg):
+        return "generate_outreach"
+
     return None
 
 
@@ -272,6 +288,14 @@ class AIChatService:
                 response, action_data, action_type = await self._handle_find_clients(message, user_id)
             elif intent == "tailor_resume":
                 response, action_data, action_type = await self._handle_tailor_resume(message, user_id)
+            elif intent == "evaluate_job":
+                response, action_data, action_type = await self._handle_evaluate_job(message, user_id)
+            elif intent == "generate_followup":
+                response, action_data, action_type = await self._handle_generate_followup(message, user_id)
+            elif intent == "company_research":
+                response, action_data, action_type = await self._handle_company_research(message, user_id)
+            elif intent == "generate_outreach":
+                response, action_data, action_type = await self._handle_generate_outreach(message, user_id)
             elif intent in ("resume_advice", "skill_guidance", "job_info", "general_chat"):
                 response = await self._handle_conversational(message, session_history, intent)
             else:
@@ -553,6 +577,321 @@ class AIChatService:
                 "I'm having trouble tailoring your resume right now. Please try again or use the [/tailor](/tailor) page directly.",
                 None, None,
             )
+
+    # ── Evaluate Job ──────────────────────────────────────────────────────
+    async def _handle_evaluate_job(
+        self, message: str, user_id: str
+    ) -> Tuple[str, Optional[Dict], Optional[str]]:
+        try:
+            from app.services.ai_provider_service import call_ai
+
+            # Extract description from message (use message itself as description)
+            # Try to extract a URL from the message
+            url_match = re.search(r'https?://\S+', message)
+            job_url = url_match.group(0) if url_match else ""
+
+            # Build minimal request — use message as description
+            description = message if not job_url else message.replace(job_url, "").strip()
+            if len(description) < 50:
+                return (
+                    "To evaluate a job, please paste the job description text (or URL) in your message. "
+                    "For example: *'Evaluate this job: [paste job description here]'*\n\n"
+                    "Or use the **Evaluate** button on any job card in [Find Jobs](/findjob).",
+                    None, None,
+                )
+
+            # Fetch user's resume
+            try:
+                resume_text = await _get_user_resume_text(user_id)
+            except ValueError:
+                return (
+                    "You haven't uploaded a resume yet. Please go to **[/upload](/upload)** first.",
+                    None, None,
+                )
+
+            # Check / deduct credits
+            cost = await CreditsService.get_feature_cost("job_evaluate")
+            if cost <= 0:
+                cost = 1.0
+
+            # Cache check
+            from app.services.mongo import mongo as _mongo
+            cached = await _mongo.job_evaluations.find_one({"userId": user_id, "jobUrl": job_url}) if job_url else None
+            if cached:
+                ev = cached.get("evaluationResult", {})
+                grade = ev.get("overallGrade", "?")
+                score = ev.get("overallScore", 0)
+                verdict = ev.get("verdict", "")
+                return (
+                    f"**Job Evaluation (cached):** {grade} · {score:.1f}/5\n\n_{verdict}_\n\n"
+                    "View the full breakdown on any evaluated job card in [Find Jobs](/findjob).",
+                    {"grade": grade, "score": score, "verdict": verdict, "action": "view_evaluation"},
+                    "job_evaluation",
+                )
+
+            ok, msg = await CreditsService.deduct_credits(user_id, cost, "job_evaluate")
+            if not ok:
+                return (
+                    f"Not enough credits to evaluate this job ({cost:.0f} needed). {msg}\n\n[Top up credits →](/pricing)",
+                    None, None,
+                )
+
+            from app.routers.job_evaluation_routes import _get_resume_text, _ghost_job_signals, _signals_to_text
+            from bson import ObjectId
+
+            north_star_doc = await _mongo.users.find_one({"_id": ObjectId(user_id)})
+            north_star = ((north_star_doc or {}).get("northStar") or "").strip()
+            signals = _ghost_job_signals(description=description, date_posted=None, salary=None)
+            signals_text = _signals_to_text(signals)
+
+            resume_block = f"\nCandidate's Resume:\n{resume_text[:4000]}\n" if resume_text else "\nCandidate's Resume: Not provided.\n"
+            north_star_block = f"\nCandidate's Career Goals:\n{north_star}\n" if north_star else "\nCandidate's Career Goals: Not provided — score axis 3.0.\n"
+
+            prompt = f"""You are a job evaluation assistant. Evaluate this job for the candidate and return ONLY valid JSON.
+{resume_block}{north_star_block}
+Job Description:
+{description[:3000]}
+
+Ghost-Job Signals:
+{signals_text}
+
+Return JSON:
+{{
+  "overallGrade": "B+",
+  "overallScore": 3.8,
+  "verdict": "Worth applying",
+  "axes": [
+    {{"name": "CV Match", "grade": "A", "score": 4.5, "reasoning": "One sentence."}},
+    {{"name": "North Star Alignment", "grade": "B", "score": 3.5, "reasoning": "One sentence."}},
+    {{"name": "Compensation vs Market", "grade": "C", "score": 2.5, "reasoning": "One sentence."}},
+    {{"name": "Cultural Signals", "grade": "B+", "score": 3.8, "reasoning": "One sentence."}},
+    {{"name": "Red Flags", "grade": "A-", "score": 4.2, "reasoning": "One sentence."}},
+    {{"name": "Posting Legitimacy", "grade": "B", "score": 3.5, "reasoning": "One sentence."}}
+  ]
+}}"""
+
+            result = call_ai(prompt, temperature=0.2, max_tokens=1200)
+            if "error" in result:
+                await CreditsService.refund_credits(user_id, cost, "Job eval via chat AI failed")
+                return ("Job evaluation failed. Please try again.", None, None)
+
+            grade = result.get("overallGrade", "?")
+            score = float(result.get("overallScore", 0))
+            verdict = result.get("verdict", "")
+            axes = result.get("axes", [])
+
+            axes_md = "\n".join(
+                f"- **{a['name']}** {a['grade']} ({a['score']:.1f}/5): {a['reasoning']}"
+                for a in axes
+            )
+
+            return (
+                f"**Job Evaluation: {grade} · {score:.1f}/5**\n\n_{verdict}_\n\n{axes_md}\n\n"
+                "_1 credit used · See full details on any job card in [Find Jobs](/findjob)_",
+                {"grade": grade, "score": score, "verdict": verdict, "action": "view_findjob"},
+                "job_evaluation",
+            )
+
+        except Exception as e:
+            print(f"evaluate_job handler error: {e}")
+            return ("Job evaluation failed. Please try again.", None, None)
+
+    # ── Generate Follow-up ───────────────────────────────────────────────
+    async def _handle_generate_followup(
+        self, message: str, user_id: str
+    ) -> Tuple[str, Optional[Dict], Optional[str]]:
+        try:
+            from app.services.ai_provider_service import call_ai
+            from app.services.mongo import mongo as _mongo
+
+            # Try to find a matching application from the message
+            msg_lower = message.lower()
+            cursor = _mongo.applications.find({"userId": user_id}).sort("createdAt", -1).limit(20)
+            apps = await cursor.to_list(length=20)
+
+            matched_app = None
+            for app in apps:
+                company = (app.get("company") or "").lower()
+                if company and company in msg_lower:
+                    matched_app = app
+                    break
+
+            if not matched_app and apps:
+                matched_app = apps[0]  # Use most recent if no match
+
+            if not matched_app:
+                return (
+                    "I couldn't find a tracked application to generate a follow-up for. "
+                    "Add applications to your [Tracker](/tracker) first, then ask me to write a follow-up.",
+                    None, None,
+                )
+
+            cost = await CreditsService.get_feature_cost("job_followup")
+            if cost <= 0:
+                cost = 1.0
+            ok, credit_msg = await CreditsService.deduct_credits(user_id, cost, "job_followup")
+            if not ok:
+                return (
+                    f"Not enough credits for follow-up generation. {credit_msg}\n\n[Top up →](/pricing)",
+                    None, None,
+                )
+
+            from datetime import datetime, timezone
+            created_at = matched_app.get("createdAt") or matched_app.get("created_at")
+            try:
+                if created_at:
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=timezone.utc)
+                    days_since = (datetime.now(timezone.utc) - created_at).days
+                else:
+                    days_since = 0
+            except Exception:
+                days_since = 0
+            company = matched_app.get("company", "the company")
+            role = matched_app.get("jobTitle", "the role")
+
+            prompt = f"""Write a professional follow-up for a job application.
+Company: {company}
+Role: {role}
+Days since applied: {days_since}
+
+Return ONLY valid JSON:
+{{
+  "emailDraft": "Professional follow-up email (max 120 words, no subject line)",
+  "linkedinDraft": "LinkedIn message (strictly max 300 characters)"
+}}"""
+
+            result = call_ai(prompt, temperature=0.4, max_tokens=600)
+            if "error" in result:
+                await CreditsService.refund_credits(user_id, cost, "Follow-up via chat AI failed")
+                return ("Follow-up generation failed. Please try again.", None, None)
+
+            email = result.get("emailDraft", "")
+            linkedin = result.get("linkedinDraft", "")[:300]
+
+            return (
+                f"**Follow-up for {company} — {role}** ({days_since} days since applied)\n\n"
+                f"**Email draft:**\n{email}\n\n"
+                f"**LinkedIn message:**\n{linkedin}\n\n"
+                "_1 credit used · View full details in your [Tracker](/tracker)_",
+                {"emailDraft": email, "linkedinDraft": linkedin, "company": company, "action": "view_tracker"},
+                "followup_drafts",
+            )
+
+        except Exception as e:
+            print(f"generate_followup handler error: {e}")
+            return ("Follow-up generation failed. Please try again.", None, None)
+
+    # ── Company Research ─────────────────────────────────────────────────
+    async def _handle_company_research(
+        self, message: str, user_id: str
+    ) -> Tuple[str, Optional[Dict], Optional[str]]:
+        try:
+            from app.services.ai_provider_service import call_ai
+
+            # Extract company name from message
+            # Remove common preamble phrases to get the company name
+            clean = re.sub(
+                r"(research|tell me about|prepare for interview at|before my interview at|company intel for|about)\s+",
+                "", message, flags=re.IGNORECASE
+            ).strip().rstrip("?.")
+            company = clean[:80] if clean else "the company"
+
+            cost = await CreditsService.get_feature_cost("company_research")
+            if cost <= 0:
+                cost = 2.0
+            ok, credit_msg = await CreditsService.deduct_credits(user_id, cost, "company_research")
+            if not ok:
+                return (
+                    f"Not enough credits for company research (needs {cost:.0f}). {credit_msg}\n\n[Top up →](/pricing)",
+                    None, None,
+                )
+
+            prompt = f"""You are a company research analyst. Research {company} for a job seeker preparing for an interview.
+Return ONLY valid JSON with this structure (no markdown, no extra text):
+{{
+  "sections": [
+    {{"name": "AI/ML Strategy", "bullets": ["...", "..."]}},
+    {{"name": "Recent Momentum", "bullets": ["...", "..."]}},
+    {{"name": "Engineering Culture", "bullets": ["...", "..."]}},
+    {{"name": "Technical Challenges", "bullets": ["...", "..."]}},
+    {{"name": "Market Position", "bullets": ["...", "..."]}},
+    {{"name": "Personal Fit Tips", "bullets": ["...", "..."]}}
+  ]
+}}
+Each section: 2-3 bullets. Be specific and actionable."""
+
+            result = call_ai(prompt, temperature=0.4, max_tokens=1200)
+
+            if "error" in result:
+                await CreditsService.refund_credits(user_id, cost, "Company research via chat AI failed")
+                return ("Company research failed. Please try the [Interview Prep](/interview-prep) page for the full experience.", None, None)
+
+            sections = result.get("sections", [])
+            md_parts = []
+            for s in sections:
+                name = s.get("name", "")
+                bullets = s.get("bullets", [])
+                md_parts.append(f"**{name}**\n" + "\n".join(f"- {b}" for b in bullets))
+            summary = "\n\n".join(md_parts) if md_parts else "Research complete — open Interview Prep for details."
+
+            return (
+                f"**Company Research: {company}**\n\n{summary}\n\n"
+                "_2 credits used · Get the full structured report in [Interview Prep](/interview-prep)_",
+                {"company": company, "action": "view_interview_prep"},
+                "company_research",
+            )
+
+        except Exception as e:
+            print(f"company_research handler error: {e}")
+            return ("Company research failed. Please try again.", None, None)
+
+    # ── Generate Outreach ────────────────────────────────────────────────
+    async def _handle_generate_outreach(
+        self, message: str, user_id: str
+    ) -> Tuple[str, Optional[Dict], Optional[str]]:
+        try:
+            from app.services.ai_provider_service import call_ai
+            from app.services.mongo import mongo as _mongo
+
+            cost = await CreditsService.get_feature_cost("outreach_generate")
+            if cost <= 0:
+                cost = 1.0
+            ok, credit_msg = await CreditsService.deduct_credits(user_id, cost, "outreach_generate")
+            if not ok:
+                return (
+                    f"Not enough credits for outreach generation. {credit_msg}\n\n[Top up →](/pricing)",
+                    None, None,
+                )
+
+            # Extract company/role from message
+            company_match = re.search(r'\bat\s+([A-Z][a-zA-Z0-9\s&.]{1,40})', message)
+            company = company_match.group(1).strip() if company_match else "the company"
+
+            prompt = f"""Write a personalized LinkedIn connection message for a job seeker reaching out to a hiring contact at {company}.
+The message should be professional, specific, and strictly under 300 characters (LinkedIn limit).
+User message context: {message[:300]}
+Return ONLY valid JSON: {{"message": "...", "characterCount": 250}}"""
+
+            result = call_ai(prompt, temperature=0.4, max_tokens=200)
+            if "error" in result:
+                await CreditsService.refund_credits(user_id, cost, "Outreach via chat AI failed")
+                return ("Outreach message generation failed. Please try again.", None, None)
+
+            msg_text = result.get("message", "")[:300]
+            char_count = len(msg_text)
+
+            return (
+                f"**LinkedIn Message for {company}:**\n\n_{msg_text}_\n\n"
+                f"_{char_count}/300 characters_\n\n"
+                "_1 credit used · Generate more tailored messages in your [Tracker](/tracker)_",
+                {"message": msg_text, "characterCount": char_count, "company": company, "action": "view_tracker"},
+                "outreach_message",
+            )
+
+        except Exception as e:
+            print(f"generate_outreach handler error: {e}")
+            return ("Outreach message generation failed. Please try again.", None, None)
 
     # ── Conversational ─────────────────────────────────────────────────────
     async def _handle_conversational(

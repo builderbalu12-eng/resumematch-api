@@ -272,4 +272,14 @@ Score: 1.0–5.0 (one decimal place)"""
         "createdAt": datetime.utcnow(),
     })
 
+    # ── 10. Back-fill grade onto tracked application (if exists) ──
+    if payload.jobUrl:
+        await mongo.applications.update_one(
+            {"userId": user_id, "jobUrl": payload.jobUrl},
+            {"$set": {
+                "evaluationGrade": evaluation_result["overallGrade"],
+                "evaluationScore": evaluation_result["overallScore"],
+            }},
+        )
+
     return {"data": evaluation_result}

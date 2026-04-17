@@ -22,6 +22,7 @@ from app.routers import job_evaluation_routes
 from app.routers import star_routes
 from app.routers import company_research_routes
 from app.routers import outreach_routes
+from app.routers import compensation_routes
 
 
 app = FastAPI(
@@ -77,6 +78,7 @@ app.include_router(job_evaluation_routes.router, prefix="/api")
 app.include_router(star_routes.router, prefix="/api")
 app.include_router(company_research_routes.router, prefix="/api")
 app.include_router(outreach_routes.router, prefix="/api")
+app.include_router(compensation_routes.router, prefix="/api")
 
 
 
@@ -169,6 +171,18 @@ async def startup_event():
             "credits_per_unit": 1,
             "unit": "suggestion",
             "description": "AI ranks the user's STAR stories by relevance for a specific job description",
+            "is_active": True,
+        })
+
+    # Seed compensation_research feature cost if not already present
+    existing_comp = await mongo.credits_on_features.find_one({"feature": "compensation_research"})
+    if not existing_comp:
+        await mongo.credits_on_features.insert_one({
+            "feature": "compensation_research",
+            "display_name": "Compensation Research",
+            "credits_per_unit": 2,
+            "unit": "research",
+            "description": "AI market rate lookup: salary range, verdict, and rationale for a given role and location",
             "is_active": True,
         })
 
