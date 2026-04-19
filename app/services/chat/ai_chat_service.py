@@ -377,7 +377,9 @@ class AIChatService:
                         None, None,
                     )
 
-            jobs = [
+            # Cap at 5 jobs for individual card display
+            top_results = raw_results[:5]
+            jobs_base = [
                 {
                     "Title": j.get("title", ""),
                     "Company": j.get("company", ""),
@@ -388,11 +390,44 @@ class AIChatService:
                     "Type": j.get("job_type", ""),
                     "URL": j.get("job_url", ""),
                 }
-                for j in raw_results[:20]
+                for j in top_results
             ]
+
+            # Generate a short personal pitch per job using Gemini
+            try:
+                user_doc = await mongo.users.find_one({"_id": ObjectId(user_id)})
+                user_role = ""
+                if user_doc:
+                    prefs = user_doc.get("jobPreferences") or user_doc.get("job_preferences") or {}
+                    user_role = prefs.get("desired_role") or prefs.get("desiredRole") or search_term
+
+                pitch_prompt = (
+                    f"You are writing a brief, personal outreach pitch for a job seeker targeting: {user_role}.\n"
+                    f"For each job below, write a 1-2 sentence lowercase conversational pitch explaining why this role fits them. "
+                    f"Be specific and encouraging. Output ONLY a JSON array of strings (one per job).\n\n"
+                    + "\n".join(f"{i+1}. {j['Title']} at {j['Company']} ({j['Location']})" for i, j in enumerate(jobs_base))
+                )
+                model = genai.GenerativeModel("gemini-1.5-flash")
+                resp = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: model.generate_content(pitch_prompt)
+                )
+                raw_text = resp.text.strip()
+                if raw_text.startswith("```"):
+                    raw_text = raw_text.split("```")[1]
+                    if raw_text.startswith("json"):
+                        raw_text = raw_text[4:]
+                pitches = json.loads(raw_text.strip())
+                for i, job in enumerate(jobs_base):
+                    job["pitch"] = pitches[i] if i < len(pitches) else ""
+            except Exception as pe:
+                print(f"Pitch generation failed: {pe}")
+                for job in jobs_base:
+                    job.setdefault("pitch", "")
+
             return (
-                f"Found **{len(jobs)} {search_term} jobs** in {location.title()}. Download the spreadsheet below.",
-                {"jobs": jobs, "count": len(jobs)},
+                f"here are the top **{len(jobs_base)} {search_term} roles** i found in {location.title()} ✨",
+                {"jobs": jobs_base, "count": len(jobs_base)},
                 "jobs_results",
             )
 
