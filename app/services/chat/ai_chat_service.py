@@ -471,12 +471,13 @@ class AIChatService:
                     None, None,
                 )
 
+            top_results = raw_results[:5]
+
             if cost > 0:
-                ok, deduct_msg = await CreditsService.deduct_credits(user_id, amount=cost, feature="find_jobs")
+                total_cost = cost * len(top_results)
+                ok, deduct_msg = await CreditsService.deduct_credits(user_id, amount=total_cost, feature="find_jobs")
                 if not ok:
                     return (f"credit deduction failed. {deduct_msg}\n\nvisit /pricing to top up.", None, None)
-
-            top_results = raw_results[:5]
             jobs_base = [
                 {
                     "Title":      j.get("title", ""),
