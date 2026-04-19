@@ -83,7 +83,7 @@ def _map_jsearch_job(j: Dict[str, Any]) -> Dict[str, Any]:
     location = ", ".join(loc_parts) if loc_parts else _clean(j.get("job_location", ""))
 
     return {
-        "site":        "jsearch",
+        "site":        (j.get("job_publisher") or "").lower(),
         "title":       _clean(j.get("job_title", "")),
         "company":     _clean(j.get("employer_name", "")),
         "location":    location,
