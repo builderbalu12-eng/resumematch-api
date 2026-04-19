@@ -165,12 +165,11 @@ async def analyze_lead(
     client_id: str,
     current_user: str = Depends(get_current_user)
 ):
-    """Generate an AI outreach insight for a lead. Costs 1 credit. Cached on lead doc."""
+    """Generate an AI outreach insight for a lead. Cached on lead doc."""
     from app.services.mongo import mongo
     from app.services.credits_service import CreditsService
     from app.services.ai_provider_service import call_ai_text_async
 
-    # Check cached insight first
     lead = await mongo.clients.find_one({"_id": ObjectId(client_id), "owner_id": current_user})
     if not lead:
         raise HTTPException(404, "Lead not found")
@@ -178,7 +177,6 @@ async def analyze_lead(
     if lead.get("ai_insight"):
         return {"success": True, "insight": lead["ai_insight"], "cached": True}
 
-    # Deduct 1 credit
     cost = await CreditsService.get_feature_cost("lead_analyze")
     success, msg = await CreditsService.deduct_credits(current_user, float(cost))
     if not success:
