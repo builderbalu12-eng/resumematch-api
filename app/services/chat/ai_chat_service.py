@@ -327,17 +327,65 @@ class AIChatService:
         try:
             cost = await CreditsService.get_feature_cost("find_jobs")
 
-            # Check user has enough credits before running the scraper
+            # Load user profile context upfront (used for credits + smart search)
+            user_doc = await mongo.users.find_one({"_id": ObjectId(user_id)})
+            if not user_doc:
+                return ("User not found.", None, None)
+
             if cost > 0:
-                user_doc = await mongo.users.find_one({"_id": ObjectId(user_id)})
-                balance = float(user_doc.get("credits", 0)) if user_doc else 0.0
+                balance = float(user_doc.get("credits", 0))
                 if balance < cost:
                     return (
                         f"You don't have enough credits to search for jobs (need {cost:.0f} credits, you have {balance:.0f}).\n\nVisit /pricing to top up.",
                         None, None,
                     )
 
-            search_term, location = _parse_job_query(message)
+            # Parse what the user typed
+            msg_role, msg_location = _parse_job_query(message)
+
+            # Detect vague queries — words that aren't real job titles
+            _VAGUE_WORDS = {
+                "matching", "match", "profile", "skill", "skills", "my",
+                "suitable", "relevant", "related", "appropriate", "good",
+                "fit", "fits", "based", "background", "experience",
+                "help", "software", "developer",  # too generic without context
+            }
+            msg_words = set(msg_role.lower().split())
+            is_vague = len(msg_words - _VAGUE_WORDS) == 0
+
+            # Pull preferred role / location from saved preferences or resume
+            prefs = user_doc.get("jobPreferences") or user_doc.get("job_preferences") or {}
+            pref_role = prefs.get("desired_role") or prefs.get("desiredRole") or ""
+            pref_location = prefs.get("preferred_location") or prefs.get("preferredLocation") or ""
+
+            # If message is vague and we have no profile prefs, try to read from resume
+            if is_vague and not pref_role:
+                try:
+                    resume_text = await _get_user_resume_text(user_id)
+                    if resume_text:
+                        # Ask Gemini to extract role + location from resume
+                        model = genai.GenerativeModel("gemini-1.5-flash")
+                        extract_prompt = (
+                            f"From this resume extract the most recent or target job role and the city.\n"
+                            f"Reply ONLY as JSON: {{\"role\": \"...\", \"city\": \"...\"}}\n\n{resume_text[:2000]}"
+                        )
+                        ext_resp = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: model.generate_content(extract_prompt)
+                        )
+                        raw = ext_resp.text.strip().strip("```json").strip("```").strip()
+                        extracted = json.loads(raw)
+                        pref_role = extracted.get("role", "") or pref_role
+                        pref_location = extracted.get("city", "") or pref_location
+                except Exception:
+                    pass
+
+            # Use profile context when message is vague
+            search_term = pref_role if (is_vague and pref_role) else msg_role
+            location = pref_location.lower() if (msg_location == "india" and pref_location) else msg_location
+
+            # Normalise bengaluru
+            if "bengaluru" in location:
+                location = "bangalore"
             loop = asyncio.get_event_loop()
 
             # Try Naukri raw scraper first (no external deps)
@@ -395,11 +443,7 @@ class AIChatService:
 
             # Generate a short personal pitch per job using Gemini
             try:
-                user_doc = await mongo.users.find_one({"_id": ObjectId(user_id)})
-                user_role = ""
-                if user_doc:
-                    prefs = user_doc.get("jobPreferences") or user_doc.get("job_preferences") or {}
-                    user_role = prefs.get("desired_role") or prefs.get("desiredRole") or search_term
+                user_role = pref_role or search_term
 
                 pitch_prompt = (
                     f"You are writing a brief, personal outreach pitch for a job seeker targeting: {user_role}.\n"
