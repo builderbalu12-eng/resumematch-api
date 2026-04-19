@@ -7,7 +7,10 @@ from app.services.job_recommendation_service import (
     JobRecommendationService,
     _scrape_naukri_raw_sync,
     _scrape_jobspy_sync,
+    _scrape_jsearch,
+    _QuotaExhausted,
 )
+from app.config import settings
 from app.services.lead_finder import LeadFinder
 from app.services.resume_processor import tailor_resume as do_tailor_resume
 from app.services.mongo import mongo
@@ -387,10 +390,29 @@ class AIChatService:
                 loc = "bangalore"
 
             loop = asyncio.get_event_loop()
-            raw_results: List[Dict] = await loop.run_in_executor(
-                None,
-                lambda: _scrape_naukri_raw_sync(search_term, loc, pages=2),
-            )
+            raw_results: List[Dict] = []
+
+            # 1. JSearch (RapidAPI) — most reliable, async
+            if not raw_results:
+                try:
+                    raw_results = await _scrape_jsearch(
+                        search_term=search_term,
+                        location=loc,
+                        hours_old=72,
+                        is_remote=None,
+                        api_key=settings.jsearch_api_key,
+                    )
+                except (_QuotaExhausted, Exception) as e:
+                    print(f"[Jobs] JSearch failed: {e}")
+
+            # 2. Naukri raw scraper
+            if not raw_results:
+                raw_results = await loop.run_in_executor(
+                    None,
+                    lambda: _scrape_naukri_raw_sync(search_term, loc, pages=2),
+                )
+
+            # 3. JobSpy (LinkedIn + Indeed)
             if not raw_results:
                 raw_results = await loop.run_in_executor(
                     None,
@@ -406,9 +428,46 @@ class AIChatService:
                     ),
                 )
 
+            # 4. Retry JSearch with broad "india" location
+            if not raw_results and loc != "india":
+                try:
+                    raw_results = await _scrape_jsearch(
+                        search_term=search_term,
+                        location="india",
+                        hours_old=168,
+                        is_remote=None,
+                        api_key=settings.jsearch_api_key,
+                    )
+                    if raw_results:
+                        loc = "india"
+                except (_QuotaExhausted, Exception):
+                    pass
+
+            # 5. Absolute fallback — broader role keyword search across india
+            if not raw_results:
+                broad_term = search_term.split()[0] if search_term else "developer"
+                try:
+                    raw_results = await _scrape_jsearch(
+                        search_term=broad_term,
+                        location="india",
+                        hours_old=336,
+                        is_remote=None,
+                        api_key=settings.jsearch_api_key,
+                    )
+                    if raw_results:
+                        search_term = broad_term
+                        loc = "india"
+                except (_QuotaExhausted, Exception):
+                    pass
+
             if not raw_results:
                 return (
-                    f"i couldn't find any {search_term} roles in {loc} right now. no credits deducted. try a different role or city.",
+                    f"i couldn't pull live listings right now for **{search_term}** in **{loc}** — the job boards seem to be blocking scrapers at the moment.\n\n"
+                    f"here's what you can do:\n"
+                    f"- try the **[/findjob](/findjob)** page for broader search options\n"
+                    f"- search on [Naukri](https://www.naukri.com/jobs-in-{loc.replace(' ', '-')}?k={search_term.replace(' ', '+')}) directly\n"
+                    f"- search on [LinkedIn](https://www.linkedin.com/jobs/search/?keywords={search_term.replace(' ', '+')}&location={loc}) directly\n\n"
+                    f"no credits were deducted.",
                     None, None,
                 )
 
