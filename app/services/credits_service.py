@@ -62,9 +62,11 @@ class CreditsService:
         feature: str = "generic",
     ) -> Tuple[bool, str]:
         """
-        Deduct credits when using a paid feature (Gemini / lead finder).
-        Now only updates users + credits_log (no payment_logs).
+        Deduct credits when using a paid feature.
+        Updates users + credits_log.
         """
+        from app.services.ai_provider_service import get_active_provider_sync
+
         user = await mongo.users.find_one({"_id": ObjectId(user_id)})
         if not user:
             return False, "User not found"
@@ -86,7 +88,6 @@ class CreditsService:
             }
         )
 
-        # Optional: you can log here, or rely on log_deduction() from callers
         await mongo.credits_log.insert_one({
             "user_id":       user_id,
             "type":          "deduction",
@@ -95,6 +96,9 @@ class CreditsService:
             "function_name": "deduct_credits",
             "description":   f"Credits deducted for {feature}",
             "balance_after": new_credits,
+            "provider":      get_active_provider_sync(),
+            "input_tokens":  0,
+            "output_tokens": 0,
             "created_at":    datetime.utcnow(),
         })
 
@@ -127,7 +131,12 @@ class CreditsService:
         feature:       str = "unknown",
         function_name: str = "unknown",
         description:   str = "",
+        input_tokens:  int = 0,
+        output_tokens: int = 0,
+        provider:      str = None,
     ) -> None:
+        from app.services.ai_provider_service import get_active_provider_sync
+
         user = await mongo.users.find_one(
             {"_id": ObjectId(user_id)},
             {"credits": 1}
@@ -143,6 +152,9 @@ class CreditsService:
             "function_name": function_name,
             "description":   description,
             "balance_after": balance_after,
+            "provider":      provider or get_active_provider_sync(),
+            "input_tokens":  input_tokens or 0,
+            "output_tokens": output_tokens or 0,
             "created_at":    datetime.utcnow(),
         })
 

@@ -1,228 +1,109 @@
 import json
-import re
 import asyncio
+from datetime import datetime
 from bson import ObjectId
-import google.generativeai as genai
-from app.services.chat.domain_guard import is_job_related, get_blocked_response
-from app.services.chat.intent_classifier import classify_intent
+from app.services.credits_service import CreditsService
 from app.services.job_recommendation_service import (
     JobRecommendationService,
     _scrape_naukri_raw_sync,
     _scrape_jobspy_sync,
 )
 from app.services.lead_finder import LeadFinder
-from app.services.credits_service import CreditsService
 from app.services.resume_processor import tailor_resume as do_tailor_resume
 from app.services.mongo import mongo
 from app.models.chat.schemas import ChatMessage
+from app.services.ai_provider_service import (
+    call_ai,
+    call_ai_text_async,
+    call_ai_with_tools_async,
+    send_tool_result_async,
+)
 from typing import List, Dict, Any, Optional, Tuple
 
 
-# Gemini is configured at startup via init_gemini_config() in main.py.
-# No need to re-configure here — genai.configure() is process-global.
+# ─────────────────────────────────────────────────────────────────────────────
+# Provider-agnostic tool manifest
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Supported cities / categories for lead extraction
-_CITIES = [
-    "bangalore", "delhi", "mumbai", "chennai", "kolkata",
-    "hyderabad", "pune", "ahmedabad", "jaipur", "surat",
+NOVA_TOOLS = [
+    {
+        "name": "search_jobs",
+        "description": (
+            "Search job boards for live openings matching a specific role and location. "
+            "Call this when the user wants to find job listings. "
+            "Only call when you have a real job title and city — never pass vague terms."
+        ),
+        "parameters": {
+            "role":     {"type": "string", "description": "Exact job title (e.g. 'software engineer', 'data analyst', 'product manager')"},
+            "location": {"type": "string", "description": "City or region (e.g. 'bangalore', 'mumbai', 'delhi', 'india')"},
+        },
+        "required": ["role", "location"],
+    },
+    {
+        "name": "save_job_preferences",
+        "description": "Save the user's target job role and preferred location to their profile so future searches use them automatically.",
+        "parameters": {
+            "desired_role":       {"type": "string", "description": "Job title the user is targeting"},
+            "preferred_location": {"type": "string", "description": "Preferred city or location"},
+        },
+        "required": ["desired_role", "preferred_location"],
+    },
+    {
+        "name": "tailor_resume",
+        "description": "ATS-optimize the user's uploaded resume for a specific job description. Requires the full job description text.",
+        "parameters": {
+            "job_description": {"type": "string", "description": "Full job description text to tailor the resume for"},
+        },
+        "required": ["job_description"],
+    },
+    {
+        "name": "evaluate_job",
+        "description": "Score a job posting against the user's resume and career goals. Returns a grade, score, and axis breakdown.",
+        "parameters": {
+            "job_description": {"type": "string", "description": "Full job description text to evaluate"},
+        },
+        "required": ["job_description"],
+    },
+    {
+        "name": "research_company",
+        "description": "Research a company to help the user prepare for an interview or decide whether to apply.",
+        "parameters": {
+            "company_name": {"type": "string", "description": "Exact company name to research"},
+        },
+        "required": ["company_name"],
+    },
+    {
+        "name": "generate_followup_email",
+        "description": "Write a professional follow-up email + LinkedIn message for a submitted job application.",
+        "parameters": {
+            "company": {"type": "string", "description": "Company name (leave blank to use the most recent tracked application)"},
+        },
+        "required": [],
+    },
+    {
+        "name": "generate_outreach_message",
+        "description": "Write a personalised LinkedIn connection message for a hiring contact or recruiter.",
+        "parameters": {
+            "context": {"type": "string", "description": "Who to contact and why (e.g. 'hiring manager at Google for senior engineer role')"},
+        },
+        "required": ["context"],
+    },
+    {
+        "name": "find_business_leads",
+        "description": "Find local business leads via Google Maps (gyms, salons, restaurants, clinics, etc.) for sales prospecting.",
+        "parameters": {
+            "city":      {"type": "string", "description": "City to search in (e.g. 'bangalore', 'mumbai', 'delhi')"},
+            "category":  {"type": "string", "description": "Business type (e.g. 'gym', 'salon', 'restaurant', 'clinic', 'jeweler')"},
+            "radius_km": {"type": "number", "description": "Search radius in km (default 5)"},
+        },
+        "required": ["city", "category"],
+    },
 ]
-_CATEGORIES = [
-    "restaurant", "jeweler", "salon", "gym", "clinic", "clothing",
-    "bakery", "realestate", "carrepair", "hotel", "cafe", "pharmacy",
-    "fitness", "spa", "yoga", "dental", "hospital", "school", "coaching",
-    "grocery", "hardware", "electronics", "furniture", "travel", "insurance",
-]
 
 
-_JOB_LOCATIONS = [
-    "bangalore", "bengaluru", "mumbai", "delhi", "hyderabad", "pune",
-    "chennai", "kolkata", "ahmedabad", "noida", "gurgaon", "gurugram",
-    "jaipur", "surat", "india",
-]
-
-
-_CITY_NAMES = (
-    "bangalore", "bengaluru", "mumbai", "bombay", "delhi", "new delhi",
-    "hyderabad", "pune", "chennai", "madras", "kolkata", "calcutta",
-    "ahmedabad", "noida", "gurgaon", "gurugram", "jaipur", "surat",
-    "lucknow", "chandigarh", "bhopal", "nagpur", "indore", "coimbatore",
-)
-
-# Short fragments that survive common typos (transpositions, extra letters).
-# e.g. "clienst" contains "clien", "jwelery" contains "jwel", "resturant" contains "rest"
-_BIZ_FRAGMENTS = (
-    "clien", "lead", "business", "shop", "store",   # "clien" ⊂ "clienst"
-    "gym", "fitnes", "salon", "spa", "yoga",
-    "clinic", "dental", "hospit", "pharmac",
-    "restaur", "rest",                               # "rest" ⊂ "resturant"
-    "cafe", "hotel", "bakery",
-    "jwel", "jewel", "jewlr",                        # "jwel" ⊂ "jwelery"
-    "cloth", "furn", "electron", "grocer", "school", "coach",
-    "travel", "insur", "realest",
-)
-
-
-def _quick_classify(message: str) -> Optional[str]:
-    """Regex pre-classifier for unambiguous intent — robust to minor typos."""
-    msg = message.lower()
-
-    # find_jobs: word "job/jobs" present
-    if re.search(r'\bjobs?\b', msg) and re.search(r'\b(find|search|get|show|list|look)\b', msg):
-        return "find_jobs"
-    if re.search(r'\bjobs?\b.{0,30}\b(in|at|near)\b', msg):
-        return "find_jobs"
-
-    # find_leads: "near/in <city>" + any business fragment — typo-safe
-    city_pattern = '|'.join(re.escape(c) for c in _CITY_NAMES)
-    near_city = re.search(rf'\b(near|in|at|around)\b.{{0,40}}({city_pattern})', msg)
-    has_biz = any(frag in msg for frag in _BIZ_FRAGMENTS)
-
-    if near_city and has_biz:
-        return "find_leads"
-
-    # "near [city]" alone — in this app, always a business lead search
-    if near_city and not re.search(r'\bjobs?\b', msg):
-        return "find_leads"
-
-    # "find/search/get + any business fragment" even without explicit city
-    if re.search(r'\b(find|get|search|show|look|help)\b', msg) and has_biz:
-        return "find_leads"
-
-    # tailor_resume
-    if re.search(r'tailor|customiz|optimis|optimiz', msg) and 'resum' in msg:
-        return "tailor_resume"
-
-    # evaluate_job
-    if re.search(r'\bevaluat|should i apply|rate this job|score this job|is this job', msg):
-        return "evaluate_job"
-
-    # generate_followup
-    if re.search(r'follow.?up|follow-up email|write.*message.*appli|message.*follow', msg):
-        return "generate_followup"
-
-    # company_research
-    if re.search(r'research (the )?company|research .{1,40} (before|for) interview|prepare for interview at|tell me about .{1,40} culture|company intel', msg):
-        return "company_research"
-
-    # generate_outreach
-    if re.search(r'linkedin message|outreach message|message the hiring|message.*recruiter|connect with.*at\b', msg):
-        return "generate_outreach"
-
-    return None
-
-
-_JOB_TITLE_FIXES = {
-    "frontd":    "frontend",
-    "fronted":   "frontend",
-    "frontent":  "frontend",
-    "backedn":   "backend",
-    "bakend":    "backend",
-    "fullstck":  "full stack",
-    "fullsatck": "full stack",
-    "devloper":  "developer",
-    "devlop":    "developer",
-    "engneer":   "engineer",
-    "enginear":  "engineer",
-    "enginer":   "engineer",
-    "anaylst":   "analyst",
-    "anlyst":    "analyst",
-    "managre":   "manager",
-    "managar":   "manager",
-    "desginer":  "designer",
-    "desinger":  "designer",
-    "prodcut":   "product",
-    "markting":  "marketing",
-    "hr":        "human resources",
-}
-
-
-def _parse_job_query(message: str) -> Tuple[str, str]:
-    """Extract search term and location from a job-search message."""
-    msg = message.lower()
-    location = next((loc for loc in _JOB_LOCATIONS if loc in msg), "india")
-
-    # Normalise bengaluru → bangalore for Naukri URL slugs
-    naukri_location = "bangalore" if location == "bengaluru" else location
-
-    # Strip common stop words to get the job title
-    stop = {
-        "find", "me", "show", "get", "search", "for", "in", "at", "near",
-        "please", "can", "you", "help", "i", "want", "need", "a", "an",
-        "the", "some", "any", "new", "recent", "latest", "jobs", "job",
-        "listings", "vacancies", "openings", "positions", "roles",
-        location, naukri_location,
-    }
-    words = re.sub(r"[^\w\s]", "", msg).split()
-    search_words = [
-        _JOB_TITLE_FIXES.get(w, w)
-        for w in words if w not in stop and len(w) > 1
-    ]
-    search_term = " ".join(search_words).strip() or "software engineer"
-
-    return search_term, naukri_location
-
-
-_CATEGORY_MAP = {
-    # prefix → canonical Google Maps search term
-    "jwel":     "jeweler",   # typo: "jwelery" → prefix "jwel"
-    "jewel":    "jeweler",
-    "jewlr":    "jeweler",
-    "restaur":  "restaurant",
-    "gym":      "gym",
-    "fitness":  "gym",
-    "salon":    "salon",
-    "spa":      "spa",
-    "yoga":     "yoga studio",
-    "clinic":   "clinic",
-    "dental":   "dentist",
-    "hospit":   "hospital",
-    "pharmac":  "pharmacy",
-    "cafe":     "cafe",
-    "bakery":   "bakery",
-    "hotel":    "hotel",
-    "cloth":    "clothing store",
-    "furn":     "furniture store",
-    "electron": "electronics store",
-    "grocery":  "grocery store",
-    "school":   "school",
-    "coach":    "coaching center",
-    "travel":   "travel agency",
-    "insur":    "insurance",
-    "realest":  "real estate",
-    "carrepair":"car repair",
-    "client":   "business",   # generic fallback when user says "clients"
-    "business": "business",
-    "shop":     "shop",
-    "store":    "store",
-}
-
-
-def _extract_city_category_radius(message: str) -> Tuple[str, str, float]:
-    """Extract city, category and radius — prefix-matched to handle typos."""
-    msg = message.lower()
-
-    # City: check all known city names (longest match wins)
-    city = "bangalore"
-    for c in sorted(_CITY_NAMES, key=len, reverse=True):
-        if c in msg:
-            city = c
-            break
-    # Normalise bengaluru → bangalore for Naukri slugs
-    if city in ("bengaluru", "bombay", "madras", "calcutta"):
-        city = {"bengaluru": "bangalore", "bombay": "mumbai",
-                "madras": "chennai", "calcutta": "kolkata"}[city]
-
-    # Category: prefix matching
-    category = "business"  # safe default
-    for prefix, canonical in _CATEGORY_MAP.items():
-        if prefix in msg:
-            category = canonical
-            break
-
-    m = re.search(r"(\d+)\s*km", msg)
-    radius = float(m.group(1)) if m else 5.0
-    return city, category, radius
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Resume helper
+# ─────────────────────────────────────────────────────────────────────────────
 
 async def _get_user_resume_text(user_id: str) -> str:
     """Fetch and flatten the user's latest resume from incoming_resumes."""
@@ -247,9 +128,54 @@ async def _get_user_resume_text(user_id: str) -> str:
         if parts:
             return "\n".join(parts)
 
-    # Fallback: raw text field
     return doc.get("raw_text") or doc.get("text") or ""
 
+
+async def _get_user_resume_text_safe(user_id: str) -> str:
+    try:
+        return await _get_user_resume_text(user_id)
+    except Exception:
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# System prompt builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_system_prompt(user_doc: dict, resume_text: str) -> str:
+    prefs             = user_doc.get("jobPreferences") or user_doc.get("job_preferences") or {}
+    desired_role      = prefs.get("desired_role") or prefs.get("desiredRole") or "not set"
+    preferred_location = prefs.get("preferred_location") or prefs.get("preferredLocation") or "not set"
+    north_star        = (user_doc.get("northStar") or "not set").strip()
+    first_name        = user_doc.get("firstName", "")
+    prefs_collected   = bool(prefs.get("desired_role") or prefs.get("desiredRole"))
+
+    resume_status  = "loaded" if resume_text else "not uploaded"
+    resume_snippet = resume_text[:1500] if resume_text else ""
+
+    return f"""You are Nova, an AI career and business assistant. You help users find jobs, improve resumes, research companies, and find business leads.
+
+## User Context
+- Name: {first_name or "unknown"}
+- Resume: {resume_status}
+- Resume summary: {resume_snippet if resume_snippet else "N/A"}
+- Target role: {desired_role}
+- Preferred location: {preferred_location}
+- Career goal: {north_star}
+- Job preferences previously saved: {prefs_collected}
+
+## How to respond
+1. **Job search**: If the user wants jobs AND you know their target role + location (from context or message), call `search_jobs` immediately. If both are unknown and never saved, ask naturally — then on next message call `save_job_preferences` and `search_jobs`.
+2. **Resume tailoring**: You need the full job description. If not provided, ask the user to paste it first.
+3. **Precision**: Never pass vague terms like "matching my profile" to `search_jobs`. Always use a concrete job title and city.
+4. **Tone**: Respond in lowercase, conversational, like a sharp career coach. Direct, warm, and brief.
+5. **Domain**: Help only with careers, jobs, resumes, business leads, and professional development. Politely decline anything else.
+6. **General chat**: If the user says hi, asks career questions, or wants advice — respond naturally without calling any tool."""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Service class
+# ─────────────────────────────────────────────────────────────────────────────
 
 class AIChatService:
 
@@ -264,143 +190,213 @@ class AIChatService:
         session_history: List[ChatMessage],
     ) -> Dict[str, Any]:
         try:
-            # Step 1: Domain guard
-            if not is_job_related(message):
+            user_doc = await mongo.users.find_one({"_id": ObjectId(user_id)})
+            if not user_doc:
                 return {
-                    "response": get_blocked_response(),
-                    "intent": "out_of_scope",
+                    "response": "user not found.",
+                    "intent": "error",
                     "action_type": None,
                     "action_data": None,
-                    "success": True,
+                    "success": False,
                 }
 
-            # Step 2: Classify intent (fast regex first, Gemini as fallback)
-            intent = _quick_classify(message) or await classify_intent(message)
-            action_type: Optional[str] = None
-            action_data: Optional[Dict[str, Any]] = None
+            resume_text = await _get_user_resume_text_safe(user_id)
+            system      = _build_system_prompt(user_doc, resume_text)
 
-            # Step 3: Route
-            if intent == "find_jobs":
-                response, action_data, action_type = await self._handle_find_jobs(message, user_id)
-            elif intent == "find_leads":
-                response, action_data, action_type = await self._handle_find_leads(message, user_id)
-            elif intent == "find_clients":
-                response, action_data, action_type = await self._handle_find_clients(message, user_id)
-            elif intent == "tailor_resume":
-                response, action_data, action_type = await self._handle_tailor_resume(message, user_id)
-            elif intent == "evaluate_job":
-                response, action_data, action_type = await self._handle_evaluate_job(message, user_id)
-            elif intent == "generate_followup":
-                response, action_data, action_type = await self._handle_generate_followup(message, user_id)
-            elif intent == "company_research":
-                response, action_data, action_type = await self._handle_company_research(message, user_id)
-            elif intent == "generate_outreach":
-                response, action_data, action_type = await self._handle_generate_outreach(message, user_id)
-            elif intent in ("resume_advice", "skill_guidance", "job_info", "general_chat"):
-                response = await self._handle_conversational(message, session_history, intent)
-            else:
-                response = get_blocked_response()
-                intent = "out_of_scope"
+            # Convert session history to provider-agnostic format
+            history = []
+            for msg in session_history[-10:]:
+                role = "user" if msg.role.value == "user" else "assistant"
+                history.append({"role": role, "content": msg.content})
+
+            # Ask the AI (with tools)
+            result = await call_ai_with_tools_async(system, history, message, NOVA_TOOLS)
+
+            # ── Text response (no tool called) ────────────────────────────
+            if result["type"] == "text":
+                if (result.get("input_tokens") or 0) > 0:
+                    await CreditsService.log_deduction(
+                        user_id=user_id, amount=0, feature="ai_chat",
+                        function_name="nova_chat",
+                        description="Nova conversation turn",
+                        input_tokens=result.get("input_tokens", 0),
+                        output_tokens=result.get("output_tokens", 0),
+                    )
+                return {
+                    "response":    result["text"],
+                    "intent":      "general_chat",
+                    "action_type": None,
+                    "action_data": None,
+                    "success":     True,
+                }
+
+            # ── Tool call ─────────────────────────────────────────────────
+            tool_name = result["tool_name"]
+            tool_args = result["tool_args"]
+
+            tool_result = await self._execute_tool(tool_name, tool_args, user_id)
+
+            # Ask AI to turn tool result into a natural reply
+            final_text = await send_tool_result_async(
+                system_prompt=system,
+                history=history,
+                message=message,
+                first_response_raw=result["raw_response"],
+                tool_name=tool_name,
+                tool_result_summary=tool_result.get("summary", tool_result.get("response", "")),
+                provider_state=result.get("provider_state", {}),
+                tools=NOVA_TOOLS,
+            )
+
+            if (result.get("input_tokens") or 0) > 0:
+                await CreditsService.log_deduction(
+                    user_id=user_id, amount=0, feature="ai_chat",
+                    function_name="nova_tool_call",
+                    description=f"Nova tool: {tool_name}",
+                    input_tokens=result.get("input_tokens", 0),
+                    output_tokens=result.get("output_tokens", 0),
+                )
 
             return {
-                "response": response,
-                "intent": intent,
-                "action_type": action_type,
-                "action_data": action_data,
-                "success": True,
+                "response":    final_text or tool_result.get("response", "done."),
+                "intent":      tool_name,
+                "action_type": tool_result.get("action_type"),
+                "action_data": tool_result.get("action_data"),
+                "success":     True,
             }
 
         except Exception as e:
-            print(f"AI Chat Service error: {str(e)}")
+            print(f"AI Chat Service error: {e}")
+            import traceback
+            traceback.print_exc()
             return {
-                "response": "I'm having trouble processing your request. Please try again.",
-                "intent": "error",
+                "response":    "i'm having trouble right now. please try again in a moment.",
+                "intent":      "error",
                 "action_type": None,
                 "action_data": None,
-                "success": False,
+                "success":     False,
+            }
+
+    # ── Tool dispatcher ────────────────────────────────────────────────────
+
+    async def _execute_tool(self, tool_name: str, tool_args: dict, user_id: str) -> dict:
+        try:
+            dispatch = {
+                "search_jobs":             lambda: self._handle_find_jobs(
+                    role=tool_args.get("role", "software engineer"),
+                    location=tool_args.get("location", "india"),
+                    user_id=user_id,
+                ),
+                "save_job_preferences":    lambda: self._handle_save_preferences(
+                    desired_role=tool_args.get("desired_role", ""),
+                    preferred_location=tool_args.get("preferred_location", ""),
+                    user_id=user_id,
+                ),
+                "tailor_resume":           lambda: self._handle_tailor_resume(
+                    job_description=tool_args.get("job_description", ""),
+                    user_id=user_id,
+                ),
+                "evaluate_job":            lambda: self._handle_evaluate_job(
+                    job_description=tool_args.get("job_description", ""),
+                    user_id=user_id,
+                ),
+                "research_company":        lambda: self._handle_company_research(
+                    company_name=tool_args.get("company_name", ""),
+                    user_id=user_id,
+                ),
+                "generate_followup_email": lambda: self._handle_generate_followup(
+                    company=tool_args.get("company", ""),
+                    user_id=user_id,
+                ),
+                "generate_outreach_message": lambda: self._handle_generate_outreach(
+                    context=tool_args.get("context", ""),
+                    user_id=user_id,
+                ),
+                "find_business_leads":     lambda: self._handle_find_leads(
+                    city=tool_args.get("city", "bangalore"),
+                    category=tool_args.get("category", "business"),
+                    radius_km=float(tool_args.get("radius_km", 5.0)),
+                    user_id=user_id,
+                ),
+            }
+
+            handler = dispatch.get(tool_name)
+            if handler:
+                response, action_data, action_type = await handler()
+            else:
+                response, action_data, action_type = f"unknown tool: {tool_name}", None, None
+
+            # Build a concise machine-readable summary for the AI round-trip
+            summary = response
+            if action_data:
+                if "jobs" in action_data:
+                    jobs = action_data["jobs"]
+                    summary = (
+                        f"Found {len(jobs)} job listings: "
+                        + ", ".join(f"{j['Title']} at {j['Company']} ({j['Location']})" for j in jobs[:3])
+                    )
+                elif "leads" in action_data:
+                    summary = (
+                        f"Found {action_data.get('count', 0)} business leads in "
+                        f"{action_data.get('city', '')} ({action_data.get('category', '')})."
+                    )
+                elif "tailored_resume" in action_data:
+                    summary = f"Resume tailored. ATS score: {action_data.get('ats_score', '?')}%."
+                elif "grade" in action_data:
+                    summary = f"Job scored {action_data['grade']} ({action_data.get('score', '?')}/5). {action_data.get('verdict', '')}."
+
+            return {
+                "response":    response,
+                "action_type": action_type,
+                "action_data": action_data,
+                "summary":     summary,
+            }
+
+        except Exception as e:
+            print(f"Tool execution error [{tool_name}]: {e}")
+            return {
+                "response":    "i ran into an issue. please try again.",
+                "action_type": None,
+                "action_data": None,
+                "summary":     "Tool execution failed.",
             }
 
     # ── Find jobs ──────────────────────────────────────────────────────────
+
     async def _handle_find_jobs(
-        self, message: str, user_id: str
+        self, role: str, location: str, user_id: str
     ) -> Tuple[str, Optional[Dict], Optional[str]]:
         try:
             cost = await CreditsService.get_feature_cost("find_jobs")
 
-            # Load user profile context upfront (used for credits + smart search)
             user_doc = await mongo.users.find_one({"_id": ObjectId(user_id)})
             if not user_doc:
-                return ("User not found.", None, None)
+                return ("user not found.", None, None)
 
             if cost > 0:
                 balance = float(user_doc.get("credits", 0))
                 if balance < cost:
                     return (
-                        f"You don't have enough credits to search for jobs (need {cost:.0f} credits, you have {balance:.0f}).\n\nVisit /pricing to top up.",
+                        f"you don't have enough credits to search for jobs (need {cost:.0f}, you have {balance:.0f}). visit /pricing to top up.",
                         None, None,
                     )
 
-            # Parse what the user typed
-            msg_role, msg_location = _parse_job_query(message)
+            search_term = role.strip() or "software engineer"
+            loc = location.lower().strip() or "india"
+            if "bengaluru" in loc:
+                loc = "bangalore"
 
-            # Detect vague queries — words that aren't real job titles
-            _VAGUE_WORDS = {
-                "matching", "match", "profile", "skill", "skills", "my",
-                "suitable", "relevant", "related", "appropriate", "good",
-                "fit", "fits", "based", "background", "experience",
-                "help", "software", "developer",  # too generic without context
-            }
-            msg_words = set(msg_role.lower().split())
-            is_vague = len(msg_words - _VAGUE_WORDS) == 0
-
-            # Pull preferred role / location from saved preferences or resume
-            prefs = user_doc.get("jobPreferences") or user_doc.get("job_preferences") or {}
-            pref_role = prefs.get("desired_role") or prefs.get("desiredRole") or ""
-            pref_location = prefs.get("preferred_location") or prefs.get("preferredLocation") or ""
-
-            # If message is vague and we have no profile prefs, try to read from resume
-            if is_vague and not pref_role:
-                try:
-                    resume_text = await _get_user_resume_text(user_id)
-                    if resume_text:
-                        # Ask Gemini to extract role + location from resume
-                        model = genai.GenerativeModel("gemini-1.5-flash")
-                        extract_prompt = (
-                            f"From this resume extract the most recent or target job role and the city.\n"
-                            f"Reply ONLY as JSON: {{\"role\": \"...\", \"city\": \"...\"}}\n\n{resume_text[:2000]}"
-                        )
-                        ext_resp = await asyncio.get_event_loop().run_in_executor(
-                            None, lambda: model.generate_content(extract_prompt)
-                        )
-                        raw = ext_resp.text.strip().strip("```json").strip("```").strip()
-                        extracted = json.loads(raw)
-                        pref_role = extracted.get("role", "") or pref_role
-                        pref_location = extracted.get("city", "") or pref_location
-                except Exception:
-                    pass
-
-            # Use profile context when message is vague
-            search_term = pref_role if (is_vague and pref_role) else msg_role
-            location = pref_location.lower() if (msg_location == "india" and pref_location) else msg_location
-
-            # Normalise bengaluru
-            if "bengaluru" in location:
-                location = "bangalore"
             loop = asyncio.get_event_loop()
-
-            # Try Naukri raw scraper first (no external deps)
             raw_results: List[Dict] = await loop.run_in_executor(
                 None,
-                lambda: _scrape_naukri_raw_sync(search_term, location, pages=2),
+                lambda: _scrape_naukri_raw_sync(search_term, loc, pages=2),
             )
-
-            # Fallback to JobSpy (LinkedIn/Indeed) if Naukri returns nothing
             if not raw_results:
                 raw_results = await loop.run_in_executor(
                     None,
                     lambda: _scrape_jobspy_sync(
                         search_term=search_term,
-                        location=location,
+                        location=loc,
                         results_per_site=5,
                         hours_old=72,
                         sites=["linkedin", "indeed"],
@@ -412,56 +408,47 @@ class AIChatService:
 
             if not raw_results:
                 return (
-                    f"I couldn't find jobs for *{search_term}* in *{location}* right now. No credits were deducted. Try a different role or city — e.g. *'Python developer jobs in Mumbai'*.",
+                    f"i couldn't find any {search_term} roles in {loc} right now. no credits deducted. try a different role or city.",
                     None, None,
                 )
 
-            # Only deduct credits when results are actually found
             if cost > 0:
                 ok, deduct_msg = await CreditsService.deduct_credits(user_id, amount=cost, feature="find_jobs")
                 if not ok:
-                    return (
-                        f"Credit deduction failed. {deduct_msg}\n\nVisit /pricing to top up.",
-                        None, None,
-                    )
+                    return (f"credit deduction failed. {deduct_msg}\n\nvisit /pricing to top up.", None, None)
 
-            # Cap at 5 jobs for individual card display
             top_results = raw_results[:5]
             jobs_base = [
                 {
-                    "Title": j.get("title", ""),
-                    "Company": j.get("company", ""),
-                    "Location": j.get("location", ""),
+                    "Title":      j.get("title", ""),
+                    "Company":    j.get("company", ""),
+                    "Location":   j.get("location", ""),
                     "Experience": j.get("experience", ""),
-                    "Salary": j.get("salary", ""),
-                    "Site": j.get("site", ""),
-                    "Type": j.get("job_type", ""),
-                    "URL": j.get("job_url", ""),
+                    "Salary":     j.get("salary", ""),
+                    "Site":       j.get("site", ""),
+                    "Type":       j.get("job_type", ""),
+                    "URL":        j.get("job_url", ""),
                 }
                 for j in top_results
             ]
 
-            # Generate a short personal pitch per job using Gemini
+            # Generate per-job pitch using the active AI provider
             try:
-                user_role = pref_role or search_term
-
                 pitch_prompt = (
-                    f"You are writing a brief, personal outreach pitch for a job seeker targeting: {user_role}.\n"
-                    f"For each job below, write a 1-2 sentence lowercase conversational pitch explaining why this role fits them. "
-                    f"Be specific and encouraging. Output ONLY a JSON array of strings (one per job).\n\n"
-                    + "\n".join(f"{i+1}. {j['Title']} at {j['Company']} ({j['Location']})" for i, j in enumerate(jobs_base))
+                    f"write brief 1-2 sentence lowercase conversational pitches for a job seeker targeting: {search_term}.\n"
+                    f"for each job below, explain why it's a great fit. output ONLY a JSON array of strings — no markdown, no extra text.\n\n"
+                    + "\n".join(
+                        f"{i+1}. {j['Title']} at {j['Company']} ({j['Location']})"
+                        for i, j in enumerate(jobs_base)
+                    )
                 )
-                model = genai.GenerativeModel("gemini-1.5-flash")
-                resp = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: model.generate_content(pitch_prompt)
-                )
-                raw_text = resp.text.strip()
+                raw_text = await call_ai_text_async(pitch_prompt, temperature=0.5, max_tokens=800)
+                raw_text = raw_text.strip()
                 if raw_text.startswith("```"):
-                    raw_text = raw_text.split("```")[1]
-                    if raw_text.startswith("json"):
-                        raw_text = raw_text[4:]
-                pitches = json.loads(raw_text.strip())
+                    lines    = raw_text.split("\n")
+                    end      = -1 if lines[-1].strip().startswith("```") else len(lines)
+                    raw_text = "\n".join(lines[1:end])
+                pitches = json.loads(raw_text)
                 for i, job in enumerate(jobs_base):
                     job["pitch"] = pitches[i] if i < len(pitches) else ""
             except Exception as pe:
@@ -470,42 +457,62 @@ class AIChatService:
                     job.setdefault("pitch", "")
 
             return (
-                f"here are the top **{len(jobs_base)} {search_term} roles** i found in {location.title()} ✨",
+                f"here are the top **{len(jobs_base)} {search_term} roles** i found in {loc.title()} ✨",
                 {"jobs": jobs_base, "count": len(jobs_base)},
                 "jobs_results",
             )
 
         except Exception as e:
             print(f"find_jobs handler error: {e}")
-            return ("I'm having trouble searching for jobs right now. Please try again.", None, None)
+            return ("i'm having trouble searching for jobs right now. please try again.", None, None)
 
-    # ── Find leads (Google Maps) ───────────────────────────────────────────
+    # ── Save preferences ───────────────────────────────────────────────────
+
+    async def _handle_save_preferences(
+        self, desired_role: str, preferred_location: str, user_id: str
+    ) -> Tuple[str, Optional[Dict], Optional[str]]:
+        try:
+            await mongo.users.update_one(
+                {"_id": ObjectId(user_id)},
+                {"$set": {
+                    "jobPreferences.desired_role":       desired_role,
+                    "jobPreferences.preferred_location": preferred_location,
+                    "jobPreferences.updated_at":         datetime.utcnow(),
+                }},
+            )
+            return (
+                f"saved your preferences: {desired_role} in {preferred_location}.",
+                None, None,
+            )
+        except Exception as e:
+            print(f"save_preferences error: {e}")
+            return ("couldn't save your preferences. please try again.", None, None)
+
+    # ── Find business leads (Google Maps) ─────────────────────────────────
+
     async def _handle_find_leads(
-        self, message: str, user_id: str
+        self, city: str, category: str, radius_km: float, user_id: str
     ) -> Tuple[str, Optional[Dict], Optional[str]]:
         try:
             cost = await CreditsService.get_feature_cost("find_leads")
 
-            # Determine how many leads the user can afford
             if cost > 0:
                 user_doc = await mongo.users.find_one({"_id": ObjectId(user_id)})
-                balance = float(user_doc.get("credits", 0)) if user_doc else 0.0
+                balance  = float(user_doc.get("credits", 0)) if user_doc else 0.0
                 max_affordable = int(balance // cost)
                 if max_affordable == 0:
                     return (
-                        f"You don't have enough credits to find leads (need at least {cost:.0f} credits, you have {balance:.0f}).\n\nVisit /pricing to top up.",
+                        f"you don't have enough credits to find leads (need at least {cost:.0f}, you have {balance:.0f}). visit /pricing to top up.",
                         None, None,
                     )
                 scraper_limit = min(20, max_affordable)
             else:
                 scraper_limit = 20
 
-            city, category, radius = _extract_city_category_radius(message)
-
             raw_leads = await self.lead_finder.find_and_save_leads(
                 city=city,
                 category=category,
-                radius_km=radius,
+                radius_km=radius_km,
                 owner_id=user_id,
                 mongo=mongo,
                 limit=scraper_limit,
@@ -513,137 +520,70 @@ class AIChatService:
 
             if not raw_leads:
                 return (
-                    f"I couldn't find leads for *{category}* in *{city}*. Try a different city or category.",
+                    f"i couldn't find any {category} leads in {city}. try a different city or category.",
                     None, None,
                 )
 
-            # Deduct cost × actual leads found (per-lead billing)
             if cost > 0:
                 total_cost = cost * len(raw_leads)
                 ok, msg = await CreditsService.deduct_credits(user_id, amount=total_cost, feature="find_leads")
                 if not ok:
-                    return (
-                        f"Credit deduction failed after finding leads. {msg}\n\nVisit /pricing to top up.",
-                        None, None,
-                    )
+                    return (f"credit deduction failed after finding leads. {msg}\n\nvisit /pricing to top up.", None, None)
 
             leads = [
                 {
-                    "Name": l.get("name", ""),
-                    "Phone": l.get("phone", ""),
-                    "Address": l.get("address", ""),
-                    "Website": l.get("website", ""),
+                    "Name":        l.get("name", ""),
+                    "Phone":       l.get("phone", ""),
+                    "Address":     l.get("address", ""),
+                    "Website":     l.get("website", ""),
                     "Has Website": "Yes" if l.get("has_website") else "No",
-                    "Rating": l.get("rating", ""),
-                    "Category": l.get("category", category),
+                    "Rating":      l.get("rating", ""),
+                    "Category":    l.get("category", category),
                 }
                 for l in raw_leads
             ]
             return (
-                f"Found **{len(leads)} leads** in {city.title()} ({category}). Download the spreadsheet below.",
+                f"found **{len(leads)} leads** in {city.title()} ({category}). download the spreadsheet below.",
                 {"leads": leads, "count": len(leads), "city": city, "category": category},
                 "leads_results",
             )
 
         except Exception as e:
             print(f"find_leads handler error: {e}")
-            return ("I'm having trouble finding leads right now. Please try again.", None, None)
-
-    # ── Find clients (existing DB leads) ──────────────────────────────────
-    async def _handle_find_clients(
-        self, message: str, user_id: str
-    ) -> Tuple[str, Optional[Dict], Optional[str]]:
-        try:
-            msg = message.lower()
-            category = next((c for c in _CATEGORIES if c in msg), None)
-
-            query: Dict[str, Any] = {"owner_id": user_id}
-            if category:
-                query["category"] = category
-
-            cursor = mongo.clients.find(query).sort("created_at", -1).limit(50)
-            clients = await cursor.to_list(length=50)
-
-            if clients:
-                leads = [
-                    {
-                        "Name": c.get("name", ""),
-                        "Category": c.get("category", ""),
-                        "Phone": c.get("phone", ""),
-                        "Address": c.get("address", ""),
-                        "Website": c.get("website", ""),
-                        "Has Website": "Yes" if c.get("has_website") else "No",
-                        "Status": c.get("status", "lead"),
-                    }
-                    for c in clients
-                ]
-                label = f"for *{category}*" if category else ""
-                return (
-                    f"Found **{len(leads)} existing leads** {label} in your database. Download the spreadsheet below.",
-                    {"leads": leads, "count": len(leads)},
-                    "leads_results",
-                )
-            else:
-                if category:
-                    return (
-                        f"You don't have any existing leads for *{category}*. Want me to find new ones? Just say which city.",
-                        None, None,
-                    )
-                return (
-                    "You don't have any saved leads yet. Want me to find some? Tell me a city and business category.",
-                    None, None,
-                )
-
-        except Exception as e:
-            print(f"find_clients handler error: {e}")
-            return ("I'm having trouble retrieving your leads right now. Please try again.", None, None)
+            return ("i'm having trouble finding leads right now. please try again.", None, None)
 
     # ── Tailor resume ──────────────────────────────────────────────────────
+
     async def _handle_tailor_resume(
-        self, message: str, user_id: str
+        self, job_description: str, user_id: str
     ) -> Tuple[str, Optional[Dict], Optional[str]]:
         cost = 0.0
         try:
-            # Fetch resume first — don't deduct credits if user has none
             try:
                 resume_text = await _get_user_resume_text(user_id)
             except ValueError:
                 return (
-                    "You haven't uploaded a resume yet. Please go to **[/upload](/upload)** to upload your master resume first, then come back here.",
+                    "you haven't uploaded a resume yet. go to **[/upload](/upload)** to upload it first.",
                     None, None,
                 )
 
             if not resume_text.strip():
-                return (
-                    "Your resume appears to be empty. Please re-upload it at **[/upload](/upload)**.",
-                    None, None,
-                )
+                return ("your resume appears to be empty. please re-upload at **[/upload](/upload)**.", None, None)
 
             cost = await CreditsService.get_feature_cost("tailor_resume")
             if cost > 0:
                 ok, msg = await CreditsService.deduct_credits(user_id, amount=cost, feature="tailor_resume")
                 if not ok:
-                    return (
-                        f"You don't have enough credits to tailor your resume. {msg}\n\nVisit /pricing to top up.",
-                        None, None,
-                    )
+                    return (f"not enough credits to tailor your resume. {msg}\n\nvisit /pricing to top up.", None, None)
 
-            # Use the full message as the job description
-            result = do_tailor_resume(resume_text, message)
-
-            tailored = result.get("tailoredResume", "")
+            result    = do_tailor_resume(resume_text, job_description)
+            tailored  = result.get("tailoredResume", "")
             ats_score = result.get("estimatedATSScore", 0)
-            notes = result.get("optimizationNotes", [])
-
-            notes_md = "\n".join(f"- {n}" for n in notes[:6])
-            response_text = (
-                f"Resume tailored! Estimated ATS score: **{ats_score}%**\n\n"
-                f"**Key improvements:**\n{notes_md}\n\n"
-                "Download your tailored resume below."
-            )
+            notes     = result.get("optimizationNotes", [])
+            notes_md  = "\n".join(f"- {n}" for n in notes[:6])
 
             return (
-                response_text,
+                f"resume tailored! estimated ATS score: **{ats_score}%**\n\n**key improvements:**\n{notes_md}\n\ndownload your tailored resume below.",
                 {"tailored_resume": tailored, "ats_score": ats_score, "optimization_notes": notes},
                 "tailored_resume",
             )
@@ -653,83 +593,48 @@ class AIChatService:
             if cost > 0:
                 await CreditsService.refund_credits(user_id, cost, "tailor_resume via chat failed")
             return (
-                "I'm having trouble tailoring your resume right now. Please try again or use the [/tailor](/tailor) page directly.",
+                "i'm having trouble tailoring your resume right now. try again or use [/tailor](/tailor) directly.",
                 None, None,
             )
 
-    # ── Evaluate Job ──────────────────────────────────────────────────────
+    # ── Evaluate job ──────────────────────────────────────────────────────
+
     async def _handle_evaluate_job(
-        self, message: str, user_id: str
+        self, job_description: str, user_id: str
     ) -> Tuple[str, Optional[Dict], Optional[str]]:
         try:
-            from app.services.ai_provider_service import call_ai
-
-            # Extract description from message (use message itself as description)
-            # Try to extract a URL from the message
-            url_match = re.search(r'https?://\S+', message)
-            job_url = url_match.group(0) if url_match else ""
-
-            # Build minimal request — use message as description
-            description = message if not job_url else message.replace(job_url, "").strip()
-            if len(description) < 50:
+            if len(job_description) < 50:
                 return (
-                    "To evaluate a job, please paste the job description text (or URL) in your message. "
-                    "For example: *'Evaluate this job: [paste job description here]'*\n\n"
-                    "Or use the **Evaluate** button on any job card in [Find Jobs](/findjob).",
+                    "please paste the full job description text so i can evaluate it. "
+                    "or use the **evaluate** button on any job card in [find jobs](/findjob).",
                     None, None,
                 )
 
-            # Fetch user's resume
             try:
                 resume_text = await _get_user_resume_text(user_id)
             except ValueError:
-                return (
-                    "You haven't uploaded a resume yet. Please go to **[/upload](/upload)** first.",
-                    None, None,
-                )
+                return ("you haven't uploaded a resume yet. go to **[/upload](/upload)** first.", None, None)
 
-            # Check / deduct credits
             cost = await CreditsService.get_feature_cost("job_evaluate")
             if cost <= 0:
                 cost = 1.0
-
-            # Cache check
-            from app.services.mongo import mongo as _mongo
-            cached = await _mongo.job_evaluations.find_one({"userId": user_id, "jobUrl": job_url}) if job_url else None
-            if cached:
-                ev = cached.get("evaluationResult", {})
-                grade = ev.get("overallGrade", "?")
-                score = ev.get("overallScore", 0)
-                verdict = ev.get("verdict", "")
-                return (
-                    f"**Job Evaluation (cached):** {grade} · {score:.1f}/5\n\n_{verdict}_\n\n"
-                    "View the full breakdown on any evaluated job card in [Find Jobs](/findjob).",
-                    {"grade": grade, "score": score, "verdict": verdict, "action": "view_evaluation"},
-                    "job_evaluation",
-                )
-
             ok, msg = await CreditsService.deduct_credits(user_id, cost, "job_evaluate")
             if not ok:
-                return (
-                    f"Not enough credits to evaluate this job ({cost:.0f} needed). {msg}\n\n[Top up credits →](/pricing)",
-                    None, None,
-                )
+                return (f"not enough credits to evaluate this job ({cost:.0f} needed). {msg}\n\n[top up →](/pricing)", None, None)
 
-            from app.routers.job_evaluation_routes import _get_resume_text, _ghost_job_signals, _signals_to_text
-            from bson import ObjectId
+            from app.routers.job_evaluation_routes import _ghost_job_signals, _signals_to_text
+            north_star_doc = await mongo.users.find_one({"_id": ObjectId(user_id)})
+            north_star     = ((north_star_doc or {}).get("northStar") or "").strip()
+            signals        = _ghost_job_signals(description=job_description, date_posted=None, salary=None)
+            signals_text   = _signals_to_text(signals)
 
-            north_star_doc = await _mongo.users.find_one({"_id": ObjectId(user_id)})
-            north_star = ((north_star_doc or {}).get("northStar") or "").strip()
-            signals = _ghost_job_signals(description=description, date_posted=None, salary=None)
-            signals_text = _signals_to_text(signals)
-
-            resume_block = f"\nCandidate's Resume:\n{resume_text[:4000]}\n" if resume_text else "\nCandidate's Resume: Not provided.\n"
+            resume_block     = f"\nCandidate's Resume:\n{resume_text[:4000]}\n" if resume_text else "\nCandidate's Resume: Not provided.\n"
             north_star_block = f"\nCandidate's Career Goals:\n{north_star}\n" if north_star else "\nCandidate's Career Goals: Not provided — score axis 3.0.\n"
 
             prompt = f"""You are a job evaluation assistant. Evaluate this job for the candidate and return ONLY valid JSON.
 {resume_block}{north_star_block}
 Job Description:
-{description[:3000]}
+{job_description[:3000]}
 
 Ghost-Job Signals:
 {signals_text}
@@ -752,56 +657,50 @@ Return JSON:
             result = call_ai(prompt, temperature=0.2, max_tokens=1200)
             if "error" in result:
                 await CreditsService.refund_credits(user_id, cost, "Job eval via chat AI failed")
-                return ("Job evaluation failed. Please try again.", None, None)
+                return ("job evaluation failed. please try again.", None, None)
 
-            grade = result.get("overallGrade", "?")
-            score = float(result.get("overallScore", 0))
+            grade   = result.get("overallGrade", "?")
+            score   = float(result.get("overallScore", 0))
             verdict = result.get("verdict", "")
-            axes = result.get("axes", [])
-
+            axes    = result.get("axes", [])
             axes_md = "\n".join(
                 f"- **{a['name']}** {a['grade']} ({a['score']:.1f}/5): {a['reasoning']}"
                 for a in axes
             )
 
             return (
-                f"**Job Evaluation: {grade} · {score:.1f}/5**\n\n_{verdict}_\n\n{axes_md}\n\n"
-                "_1 credit used · See full details on any job card in [Find Jobs](/findjob)_",
+                f"**job evaluation: {grade} · {score:.1f}/5**\n\n_{verdict}_\n\n{axes_md}\n\n"
+                "_1 credit used · see full details on any job card in [find jobs](/findjob)_",
                 {"grade": grade, "score": score, "verdict": verdict, "action": "view_findjob"},
                 "job_evaluation",
             )
 
         except Exception as e:
             print(f"evaluate_job handler error: {e}")
-            return ("Job evaluation failed. Please try again.", None, None)
+            return ("job evaluation failed. please try again.", None, None)
 
-    # ── Generate Follow-up ───────────────────────────────────────────────
+    # ── Generate follow-up ────────────────────────────────────────────────
+
     async def _handle_generate_followup(
-        self, message: str, user_id: str
+        self, company: str, user_id: str
     ) -> Tuple[str, Optional[Dict], Optional[str]]:
         try:
-            from app.services.ai_provider_service import call_ai
-            from app.services.mongo import mongo as _mongo
-
-            # Try to find a matching application from the message
-            msg_lower = message.lower()
-            cursor = _mongo.applications.find({"userId": user_id}).sort("createdAt", -1).limit(20)
-            apps = await cursor.to_list(length=20)
+            cursor = mongo.applications.find({"userId": user_id}).sort("createdAt", -1).limit(20)
+            apps   = await cursor.to_list(length=20)
 
             matched_app = None
-            for app in apps:
-                company = (app.get("company") or "").lower()
-                if company and company in msg_lower:
-                    matched_app = app
-                    break
-
+            if company:
+                for app in apps:
+                    if company.lower() in (app.get("company") or "").lower():
+                        matched_app = app
+                        break
             if not matched_app and apps:
-                matched_app = apps[0]  # Use most recent if no match
+                matched_app = apps[0]
 
             if not matched_app:
                 return (
-                    "I couldn't find a tracked application to generate a follow-up for. "
-                    "Add applications to your [Tracker](/tracker) first, then ask me to write a follow-up.",
+                    "i couldn't find a tracked application to generate a follow-up for. "
+                    "add applications to your [tracker](/tracker) first.",
                     None, None,
                 )
 
@@ -810,27 +709,25 @@ Return JSON:
                 cost = 1.0
             ok, credit_msg = await CreditsService.deduct_credits(user_id, cost, "job_followup")
             if not ok:
-                return (
-                    f"Not enough credits for follow-up generation. {credit_msg}\n\n[Top up →](/pricing)",
-                    None, None,
-                )
+                return (f"not enough credits for follow-up generation. {credit_msg}\n\n[top up →](/pricing)", None, None)
 
-            from datetime import datetime, timezone
+            from datetime import datetime as _dt, timezone
             created_at = matched_app.get("createdAt") or matched_app.get("created_at")
             try:
                 if created_at:
                     if created_at.tzinfo is None:
                         created_at = created_at.replace(tzinfo=timezone.utc)
-                    days_since = (datetime.now(timezone.utc) - created_at).days
+                    days_since = (_dt.now(timezone.utc) - created_at).days
                 else:
                     days_since = 0
             except Exception:
                 days_since = 0
-            company = matched_app.get("company", "the company")
+
+            comp = matched_app.get("company", "the company")
             role = matched_app.get("jobTitle", "the role")
 
             prompt = f"""Write a professional follow-up for a job application.
-Company: {company}
+Company: {comp}
 Role: {role}
 Days since applied: {days_since}
 
@@ -843,51 +740,43 @@ Return ONLY valid JSON:
             result = call_ai(prompt, temperature=0.4, max_tokens=600)
             if "error" in result:
                 await CreditsService.refund_credits(user_id, cost, "Follow-up via chat AI failed")
-                return ("Follow-up generation failed. Please try again.", None, None)
+                return ("follow-up generation failed. please try again.", None, None)
 
-            email = result.get("emailDraft", "")
+            email    = result.get("emailDraft", "")
             linkedin = result.get("linkedinDraft", "")[:300]
 
             return (
-                f"**Follow-up for {company} — {role}** ({days_since} days since applied)\n\n"
-                f"**Email draft:**\n{email}\n\n"
-                f"**LinkedIn message:**\n{linkedin}\n\n"
-                "_1 credit used · View full details in your [Tracker](/tracker)_",
-                {"emailDraft": email, "linkedinDraft": linkedin, "company": company, "action": "view_tracker"},
+                f"**follow-up for {comp} — {role}** ({days_since} days since applied)\n\n"
+                f"**email draft:**\n{email}\n\n"
+                f"**linkedin message:**\n{linkedin}\n\n"
+                "_1 credit used · view full details in your [tracker](/tracker)_",
+                {"emailDraft": email, "linkedinDraft": linkedin, "company": comp, "action": "view_tracker"},
                 "followup_drafts",
             )
 
         except Exception as e:
             print(f"generate_followup handler error: {e}")
-            return ("Follow-up generation failed. Please try again.", None, None)
+            return ("follow-up generation failed. please try again.", None, None)
 
-    # ── Company Research ─────────────────────────────────────────────────
+    # ── Company research ──────────────────────────────────────────────────
+
     async def _handle_company_research(
-        self, message: str, user_id: str
+        self, company_name: str, user_id: str
     ) -> Tuple[str, Optional[Dict], Optional[str]]:
         try:
-            from app.services.ai_provider_service import call_ai
-
-            # Extract company name from message
-            # Remove common preamble phrases to get the company name
-            clean = re.sub(
-                r"(research|tell me about|prepare for interview at|before my interview at|company intel for|about)\s+",
-                "", message, flags=re.IGNORECASE
-            ).strip().rstrip("?.")
-            company = clean[:80] if clean else "the company"
-
-            cost = await CreditsService.get_feature_cost("company_research")
+            company = company_name.strip()[:80] if company_name else "the company"
+            cost    = await CreditsService.get_feature_cost("company_research")
             if cost <= 0:
                 cost = 2.0
             ok, credit_msg = await CreditsService.deduct_credits(user_id, cost, "company_research")
             if not ok:
                 return (
-                    f"Not enough credits for company research (needs {cost:.0f}). {credit_msg}\n\n[Top up →](/pricing)",
+                    f"not enough credits for company research (needs {cost:.0f}). {credit_msg}\n\n[top up →](/pricing)",
                     None, None,
                 )
 
             prompt = f"""You are a company research analyst. Research {company} for a job seeker preparing for an interview.
-Return ONLY valid JSON with this structure (no markdown, no extra text):
+Return ONLY valid JSON (no markdown, no extra text):
 {{
   "sections": [
     {{"name": "AI/ML Strategy", "bullets": ["...", "..."]}},
@@ -898,141 +787,68 @@ Return ONLY valid JSON with this structure (no markdown, no extra text):
     {{"name": "Personal Fit Tips", "bullets": ["...", "..."]}}
   ]
 }}
-Each section: 2-3 bullets. Be specific and actionable."""
+Each section: 2-3 specific, actionable bullets."""
 
             result = call_ai(prompt, temperature=0.4, max_tokens=1200)
-
             if "error" in result:
                 await CreditsService.refund_credits(user_id, cost, "Company research via chat AI failed")
-                return ("Company research failed. Please try the [Interview Prep](/interview-prep) page for the full experience.", None, None)
+                return ("company research failed. try [interview prep](/interview-prep) for the full experience.", None, None)
 
             sections = result.get("sections", [])
             md_parts = []
             for s in sections:
-                name = s.get("name", "")
                 bullets = s.get("bullets", [])
-                md_parts.append(f"**{name}**\n" + "\n".join(f"- {b}" for b in bullets))
-            summary = "\n\n".join(md_parts) if md_parts else "Research complete — open Interview Prep for details."
+                md_parts.append(f"**{s.get('name', '')}**\n" + "\n".join(f"- {b}" for b in bullets))
+            summary = "\n\n".join(md_parts) if md_parts else "research complete — open interview prep for details."
 
             return (
-                f"**Company Research: {company}**\n\n{summary}\n\n"
-                "_2 credits used · Get the full structured report in [Interview Prep](/interview-prep)_",
+                f"**company research: {company}**\n\n{summary}\n\n"
+                "_2 credits used · get the full structured report in [interview prep](/interview-prep)_",
                 {"company": company, "action": "view_interview_prep"},
                 "company_research",
             )
 
         except Exception as e:
             print(f"company_research handler error: {e}")
-            return ("Company research failed. Please try again.", None, None)
+            return ("company research failed. please try again.", None, None)
 
-    # ── Generate Outreach ────────────────────────────────────────────────
+    # ── Generate outreach ─────────────────────────────────────────────────
+
     async def _handle_generate_outreach(
-        self, message: str, user_id: str
+        self, context: str, user_id: str
     ) -> Tuple[str, Optional[Dict], Optional[str]]:
         try:
-            from app.services.ai_provider_service import call_ai
-            from app.services.mongo import mongo as _mongo
-
             cost = await CreditsService.get_feature_cost("outreach_generate")
             if cost <= 0:
                 cost = 1.0
             ok, credit_msg = await CreditsService.deduct_credits(user_id, cost, "outreach_generate")
             if not ok:
-                return (
-                    f"Not enough credits for outreach generation. {credit_msg}\n\n[Top up →](/pricing)",
-                    None, None,
-                )
+                return (f"not enough credits for outreach generation. {credit_msg}\n\n[top up →](/pricing)", None, None)
 
-            # Extract company/role from message
-            company_match = re.search(r'\bat\s+([A-Z][a-zA-Z0-9\s&.]{1,40})', message)
-            company = company_match.group(1).strip() if company_match else "the company"
-
-            prompt = f"""Write a personalized LinkedIn connection message for a job seeker reaching out to a hiring contact at {company}.
-The message should be professional, specific, and strictly under 300 characters (LinkedIn limit).
-User message context: {message[:300]}
+            prompt = f"""Write a personalized LinkedIn connection message for a job seeker.
+Context: {context[:500]}
+Keep it professional, specific, and strictly under 300 characters (LinkedIn limit).
 Return ONLY valid JSON: {{"message": "...", "characterCount": 250}}"""
 
             result = call_ai(prompt, temperature=0.4, max_tokens=200)
             if "error" in result:
                 await CreditsService.refund_credits(user_id, cost, "Outreach via chat AI failed")
-                return ("Outreach message generation failed. Please try again.", None, None)
+                return ("outreach message generation failed. please try again.", None, None)
 
-            msg_text = result.get("message", "")[:300]
+            msg_text   = result.get("message", "")[:300]
             char_count = len(msg_text)
 
             return (
-                f"**LinkedIn Message for {company}:**\n\n_{msg_text}_\n\n"
+                f"**linkedin message:**\n\n_{msg_text}_\n\n"
                 f"_{char_count}/300 characters_\n\n"
-                "_1 credit used · Generate more tailored messages in your [Tracker](/tracker)_",
-                {"message": msg_text, "characterCount": char_count, "company": company, "action": "view_tracker"},
+                "_1 credit used · generate more messages in your [tracker](/tracker)_",
+                {"message": msg_text, "characterCount": char_count, "action": "view_tracker"},
                 "outreach_message",
             )
 
         except Exception as e:
             print(f"generate_outreach handler error: {e}")
-            return ("Outreach message generation failed. Please try again.", None, None)
-
-    # ── Conversational ─────────────────────────────────────────────────────
-    async def _handle_conversational(
-        self,
-        message: str,
-        session_history: List[ChatMessage],
-        intent: str,
-    ) -> str:
-        try:
-            _APP_CONTEXT = (
-                "You are Maya, the AI assistant for ZenLead — an all-in-one platform for job seekers and freelancers.\n\n"
-                "## What ZenLead can do (your built-in features):\n"
-                "1. **Find Jobs** — Search live job listings from Naukri, LinkedIn, and Indeed.\n"
-                "   → Trigger phrase: 'find [role] jobs in [city]' (e.g. 'find software engineer jobs in Bangalore')\n"
-                "2. **Find Business Leads** — Find local businesses on Google Maps (gyms, salons, restaurants, jewellers, clinics, etc.) by city.\n"
-                "   → Trigger phrase: 'find [business type] near [city]' (e.g. 'find gyms near Delhi', 'find clients related to salon in Mumbai')\n"
-                "3. **Tailor Resume** — Customize the user's uploaded resume to match a specific job description and get an ATS score.\n"
-                "   → Trigger phrase: 'tailor my resume for [job description]'\n\n"
-                "## How to respond:\n"
-                "- If the user is asking about something these features can handle, ALWAYS guide them to use the right trigger phrase.\n"
-                "- Do NOT give generic advice when a feature can actually do the work. Instead say: 'I can do that for you! Just say: find [X] near [city]'\n"
-                "- If someone mentions finding businesses, clients, leads, gyms, salons, shops, or any local service — suggest the lead finder.\n"
-                "- If someone wants job listings or vacancies — suggest the job finder.\n"
-                "- If someone wants to optimize their resume for a job — suggest the resume tailor.\n"
-                "- Only answer conversationally for things that genuinely need advice (e.g. 'how do I write a cover letter?').\n"
-            )
-
-            system_prompts = {
-                "resume_advice": "You are a resume expert. Provide specific, actionable advice for improving resumes, formatting, content, and tailoring for specific jobs.",
-                "skill_guidance": "You are a career counselor. Provide guidance on skill development, learning paths, and career progression.",
-                "job_info": "You are a job market expert. Provide information about job trends, salary expectations, and career opportunities.",
-                "general_chat": "You are a helpful job and career assistant. Answer questions about jobs, resumes, careers, and professional development.",
-            }
-            system_prompt = system_prompts.get(intent, system_prompts["general_chat"])
-
-            from app.services.ai_provider_service import call_ai_chat_async
-            from app.services.gemini_config_service import get_active_config_sync
-            _gcfg = get_active_config_sync()
-
-            system_instruction = (
-                f"{_APP_CONTEXT}\n\n"
-                f"{system_prompt}\n\n"
-                "Only answer job, resume, career, freelancing, and hiring related questions. "
-                "Never go outside this domain."
-            )
-
-            history = []
-            for msg in session_history[-10:]:
-                role = "user" if msg.role.value == "user" else "model"
-                history.append({"role": role, "parts": [msg.content]})
-
-            return await call_ai_chat_async(
-                history=history,
-                user_message=message,
-                system_instruction=system_instruction,
-                temperature=_gcfg["temperature"],
-                max_tokens=_gcfg["max_tokens"],
-            )
-
-        except Exception as e:
-            print(f"Conversational AI error: {e}")
-            return "I'm having trouble generating a response right now. Please try again."
+            return ("outreach message generation failed. please try again.", None, None)
 
 
 # Singleton

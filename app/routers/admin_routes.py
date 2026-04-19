@@ -311,40 +311,90 @@ async def list_claude_models(admin: str = Depends(require_admin)):
 
 @router.get("/resources/claude")
 async def get_claude_resource(admin: str = Depends(require_admin)):
-    """Return current Claude config + today's usage count from credits_log."""
+    """Return current Claude config + token usage stats + estimated cost from credits_log."""
     cfg = await get_claude_config()
 
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    today_count = await mongo.credits_log.count_documents({
-        "type": "deduction",
-        "provider": "claude",
-        "created_at": {"$gte": today_start},
-    })
+    now         = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = today_start.replace(day=1)
+    thirty_ago  = now - timedelta(days=30)
 
-    thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
-    pipeline = [
-        {"$match": {"type": "deduction", "provider": "claude", "created_at": {"$gte": thirty_days_ago}}},
+    # Per-token pricing per 1M tokens (input, output)
+    CLAUDE_PRICING: dict = {
+        "claude-3-5-sonnet-20241022": (3.0,  15.0),
+        "claude-3-5-haiku-20241022":  (0.80,  4.0),
+        "claude-3-opus-20240229":     (15.0, 75.0),
+        "claude-sonnet-4-5":          (3.0,  15.0),
+        "claude-opus-4-5":            (15.0, 75.0),
+        "claude-haiku-4-5":           (0.80,  4.0),
+        "claude-sonnet-4-6":          (3.0,  15.0),
+        "claude-opus-4-7":            (15.0, 75.0),
+        "claude-haiku-4-5-20251001":  (0.80,  4.0),
+    }
+    price_in, price_out = CLAUDE_PRICING.get(cfg.get("model", ""), (3.0, 15.0))
+
+    async def _agg(match_extra: dict) -> dict:
+        pipeline = [
+            {"$match": {"type": "deduction", "provider": "claude", **match_extra}},
+            {"$group": {
+                "_id":           None,
+                "count":         {"$sum": 1},
+                "input_tokens":  {"$sum": "$input_tokens"},
+                "output_tokens": {"$sum": "$output_tokens"},
+            }},
+        ]
+        rows = await mongo.credits_log.aggregate(pipeline).to_list(length=1)
+        return rows[0] if rows else {}
+
+    today_stat = await _agg({"created_at": {"$gte": today_start}})
+    month_stat = await _agg({"created_at": {"$gte": month_start}})
+
+    in_m   = (month_stat.get("input_tokens")  or 0) / 1_000_000
+    out_m  = (month_stat.get("output_tokens") or 0) / 1_000_000
+    est_cost = round(in_m * price_in + out_m * price_out, 4)
+
+    # 30-day daily breakdown with token counts
+    history_pipeline = [
+        {"$match": {"type": "deduction", "provider": "claude", "created_at": {"$gte": thirty_ago}}},
         {"$group": {
-            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}},
-            "count": {"$sum": 1},
+            "_id":           {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}},
+            "count":         {"$sum": 1},
+            "input_tokens":  {"$sum": "$input_tokens"},
+            "output_tokens": {"$sum": "$output_tokens"},
         }},
         {"$sort": {"_id": 1}},
     ]
-    history_cursor = mongo.credits_log.aggregate(pipeline)
-    history = [{"date": d["_id"], "count": d["count"]} async for d in history_cursor]
+    history = [
+        {
+            "date":          d["_id"],
+            "count":         d["count"],
+            "input_tokens":  d.get("input_tokens",  0) or 0,
+            "output_tokens": d.get("output_tokens", 0) or 0,
+        }
+        async for d in mongo.credits_log.aggregate(history_pipeline)
+    ]
 
     return {
         "data": {
-            "api_key_masked": cfg["api_key"][:8] + "•" * 20 if cfg["api_key"] else "",
-            "api_key_full":   cfg["api_key"],
-            "model":          cfg["model"],
-            "temperature":    cfg["temperature"],
-            "max_tokens":     cfg["max_tokens"],
-            "updated_at":     cfg["updated_at"].isoformat() if cfg["updated_at"] else None,
-            "updated_by":     cfg["updated_by"],
-            "today_usage":    today_count,
-            "usage_history":  history,
-            "available_models": CLAUDE_MODELS,
+            "api_key_masked":      cfg["api_key"][:8] + "•" * 20 if cfg["api_key"] else "",
+            "api_key_full":        cfg["api_key"],
+            "model":               cfg["model"],
+            "temperature":         cfg["temperature"],
+            "max_tokens":          cfg["max_tokens"],
+            "updated_at":          cfg["updated_at"].isoformat() if cfg["updated_at"] else None,
+            "updated_by":          cfg["updated_by"],
+            # today
+            "today_usage":         today_stat.get("count",         0) or 0,
+            "today_input_tokens":  today_stat.get("input_tokens",  0) or 0,
+            "today_output_tokens": today_stat.get("output_tokens", 0) or 0,
+            # this month
+            "month_usage":         month_stat.get("count",         0) or 0,
+            "month_input_tokens":  month_stat.get("input_tokens",  0) or 0,
+            "month_output_tokens": month_stat.get("output_tokens", 0) or 0,
+            "estimated_cost_month": est_cost,
+            # history
+            "usage_history":       history,
+            "available_models":    CLAUDE_MODELS,
         }
     }
 
