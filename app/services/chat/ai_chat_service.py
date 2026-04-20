@@ -338,6 +338,142 @@ class AIChatService:
                 "success":     False,
             }
 
+    # ── Streaming message processor ────────────────────────────────────────
+
+    async def process_message_stream(
+        self,
+        user_id: str,
+        message: str,
+        session_history: List[ChatMessage],
+    ):
+        """Async generator that yields SSE-ready dicts for streaming responses."""
+        timestamp = datetime.utcnow().isoformat()
+        try:
+            user_doc = await mongo.users.find_one({"_id": ObjectId(user_id)})
+            if not user_doc:
+                yield {"type": "done", "response": "user not found.", "intent": "error",
+                       "action_type": None, "action_data": None, "timestamp": timestamp}
+                return
+
+            resume_text = await _get_user_resume_text_safe(user_id)
+            system      = _build_system_prompt(user_doc, resume_text)
+            history = []
+            for msg in session_history[-10:]:
+                role = "user" if msg.role.value == "user" else "assistant"
+                history.append({"role": role, "content": msg.content})
+
+            result = await call_ai_with_tools_async(system, history, message, NOVA_TOOLS)
+
+            if result["type"] == "text":
+                yield {"type": "done", "response": result["text"], "intent": "general_chat",
+                       "action_type": None, "action_data": None, "timestamp": timestamp}
+                return
+
+            tool_name = result["tool_name"]
+            tool_args = result["tool_args"]
+
+            # ── Leads: true per-lead streaming ─────────────────────────────
+            if tool_name == "find_business_leads":
+                city       = tool_args.get("city", "bangalore")
+                category   = tool_args.get("category", "business")
+                radius_km  = float(tool_args.get("radius_km", 5.0))
+
+                cost = await CreditsService.get_feature_cost("find_leads")
+                if cost > 0:
+                    user_d  = await mongo.users.find_one({"_id": ObjectId(user_id)})
+                    balance = float(user_d.get("credits", 0)) if user_d else 0.0
+                    if balance < cost:
+                        yield {"type": "done",
+                               "response": f"you don't have enough credits (need {cost:.0f}, have {balance:.0f}). visit /pricing to top up.",
+                               "intent": tool_name, "action_type": None, "action_data": None, "timestamp": timestamp}
+                        return
+                    scraper_limit = min(20, int(balance // cost))
+                else:
+                    scraper_limit = 20
+
+                count = 0
+                async for lead_doc in self.lead_finder.find_and_stream_leads(
+                    city=city, category=category, radius_km=radius_km,
+                    owner_id=user_id, mongo=mongo, limit=scraper_limit,
+                ):
+                    count += 1
+                    yield {
+                        "type":        "item",
+                        "action_type": "leads_results",
+                        "item": {
+                            "Name":        lead_doc.get("name", ""),
+                            "Phone":       lead_doc.get("phone", ""),
+                            "Address":     lead_doc.get("address", ""),
+                            "Website":     lead_doc.get("website") or "",
+                            "Has Website": bool(lead_doc.get("has_website")),
+                            "Rating":      lead_doc.get("rating"),
+                            "Category":    lead_doc.get("category", category),
+                            "lat":         lead_doc.get("lat"),
+                            "lng":         lead_doc.get("lng"),
+                        },
+                        "meta": {"city": city, "category": category},
+                    }
+
+                if count == 0:
+                    yield {"type": "done",
+                           "response": f"couldn't find any {category} leads in {city}. try a different city or category.",
+                           "intent": tool_name, "action_type": None, "action_data": None, "timestamp": timestamp}
+                    return
+
+                if cost > 0:
+                    await CreditsService.deduct_credits(user_id, amount=cost * count, feature="find_leads")
+
+                yield {"type": "done",
+                       "response": f"found **{count} leads** in {city.title()} ({category}). download the spreadsheet below.",
+                       "intent": tool_name, "action_type": None,
+                       "action_data": {"count": count, "city": city, "category": category},
+                       "timestamp": timestamp}
+
+            # ── Jobs: fetch all → stream cards individually ────────────────
+            elif tool_name == "search_jobs":
+                tool_result = await self._execute_tool(tool_name, tool_args, user_id)
+                jobs = (tool_result.get("action_data") or {}).get("jobs", [])
+                for job in jobs:
+                    yield {"type": "item", "action_type": "jobs_results", "item": job}
+                yield {"type": "done",
+                       "response": tool_result.get("response", f"found {len(jobs)} jobs."),
+                       "intent": tool_name, "action_type": None,
+                       "action_data": {"count": len(jobs)}, "timestamp": timestamp}
+
+            # ── Freelancers: fetch all → stream cards individually ─────────
+            elif tool_name == "find_freelancers":
+                tool_result = await self._execute_tool(tool_name, tool_args, user_id)
+                freelancers = (tool_result.get("action_data") or {}).get("freelancers", [])
+                for f in freelancers:
+                    yield {"type": "item", "action_type": "freelancers_results", "item": f}
+                yield {"type": "done",
+                       "response": tool_result.get("response", f"found {len(freelancers)} freelancers."),
+                       "intent": tool_name, "action_type": None,
+                       "action_data": {"count": len(freelancers), "skill": tool_args.get("skill", "")},
+                       "timestamp": timestamp}
+
+            # ── All other tools: run normally, single done event ───────────
+            else:
+                tool_result = await self._execute_tool(tool_name, tool_args, user_id)
+                final_text  = await send_tool_result_async(
+                    system_prompt=system, history=history, message=message,
+                    first_response_raw=result["raw_response"], tool_name=tool_name,
+                    tool_result_summary=tool_result.get("summary", tool_result.get("response", "")),
+                    provider_state=result.get("provider_state", {}), tools=NOVA_TOOLS,
+                )
+                yield {"type": "done",
+                       "response":    final_text or tool_result.get("response", "done."),
+                       "intent":      tool_name,
+                       "action_type": tool_result.get("action_type"),
+                       "action_data": tool_result.get("action_data"),
+                       "timestamp":   timestamp}
+
+        except Exception as e:
+            print(f"process_message_stream error: {e}")
+            import traceback; traceback.print_exc()
+            yield {"type": "done", "response": "i'm having trouble right now. please try again.",
+                   "intent": "error", "action_type": None, "action_data": None, "timestamp": timestamp}
+
     # ── Tool dispatcher ────────────────────────────────────────────────────
 
     async def _execute_tool(self, tool_name: str, tool_args: dict, user_id: str) -> dict:

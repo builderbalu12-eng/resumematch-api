@@ -1,10 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from typing import Dict
+import json
 from pydantic import BaseModel
 from app.controllers.chat.chat_controller import chat_controller
 from app.models.chat.schemas import SendMessageRequest
 from app.middleware.auth import get_current_user
 from app.services.credits_service import CreditsService
+from app.services.chat.ai_chat_service import ai_chat_service
+from app.services.chat.session_service import session_service
 from bson import ObjectId
 
 
@@ -63,6 +67,91 @@ async def send_message(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.post("/message/stream")
+async def send_message_stream(
+    request: SendMessageRequest,
+    current_user: str = Depends(get_current_user)
+):
+    """SSE endpoint — streams each lead/job/freelancer card as it is found."""
+    cost = await CreditsService.get_feature_cost("ai_chat")
+    if cost > 0:
+        success, msg = await CreditsService.deduct_credits(current_user, amount=cost, feature="ai_chat")
+        if not success:
+            raise HTTPException(status_code=403, detail=msg)
+
+    if not request.session_id:
+        session_result = await chat_controller.new_session(current_user)
+        if not session_result["success"]:
+            raise HTTPException(status_code=500, detail=session_result["message"])
+        session_id = session_result["data"]["session_id"]
+    else:
+        session_id = request.session_id
+
+    session_history = await session_service.get_session_history(current_user, session_id)
+    await session_service.save_message(current_user, session_id, "user", request.message)
+
+    async def event_generator():
+        final_response = ""
+        final_intent   = "general_chat"
+        final_action_type = None
+        final_action_data: dict = {}
+        accumulated_items: list = []
+
+        try:
+            yield f"data: {json.dumps({'type': 'session', 'session_id': session_id})}\n\n"
+
+            async for event in ai_chat_service.process_message_stream(
+                current_user, request.message, session_history
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+                if event["type"] == "item":
+                    accumulated_items.append(event["item"])
+                elif event["type"] == "done":
+                    final_response    = event.get("response", "")
+                    final_intent      = event.get("intent", "general_chat")
+                    final_action_type = event.get("action_type")
+                    final_action_data = event.get("action_data") or {}
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            final_response = "something went wrong. please try again."
+
+        # Merge streamed items back into action_data for history persistence
+        if accumulated_items and not final_action_type:
+            # Determine action_type from items
+            pass  # action_type comes from done event's meta or item events
+        # Re-check: items were streamed — build full action_data for history
+        if accumulated_items:
+            first_event_action = None
+            # We need the action_type that was in the item events — peek at meta
+            # The done event for streaming tools has action_type=None intentionally
+            # so we derive it from items
+            if accumulated_items and "Name" in accumulated_items[0]:
+                first_event_action = "leads_results"
+                final_action_data = {**final_action_data, "leads": accumulated_items}
+            elif accumulated_items and "Title" in accumulated_items[0]:
+                first_event_action = "jobs_results"
+                final_action_data = {**final_action_data, "jobs": accumulated_items}
+            elif accumulated_items and "user_id" in accumulated_items[0]:
+                first_event_action = "freelancers_results"
+                final_action_data = {**final_action_data, "freelancers": accumulated_items}
+            if first_event_action:
+                final_action_type = first_event_action
+
+        await session_service.save_message(
+            current_user, session_id, "assistant", final_response,
+            final_intent,
+            action_type=final_action_type,
+            action_data=final_action_data if final_action_data else None,
+        )
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/history")

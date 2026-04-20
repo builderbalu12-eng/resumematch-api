@@ -5,6 +5,7 @@ import asyncio
 from app.config import settings
 from datetime import datetime
 from bson import ObjectId
+from typing import AsyncGenerator
 
 CATEGORY_MAP = {
     "restaurant":  "restaurant",
@@ -179,6 +180,115 @@ class LeadFinder:
 
         print(f"✅ Saved {len(saved)} | ⏭️ Skipped {skipped_duplicate} duplicates for '{category}' in '{city}'")
         return saved
+
+
+    @staticmethod
+    async def find_and_stream_leads(
+        city: str,
+        category: str,
+        radius_km: float,
+        owner_id: str,
+        mongo,
+        limit: int = 50
+    ):
+        """Async generator — yields each lead doc as it is saved."""
+        if category == "all":
+            per_cat = max(1, limit // len(ALL_CATEGORIES))
+            for cat in ALL_CATEGORIES:
+                async for doc in LeadFinder._fetch_category_stream(city, cat, radius_km, owner_id, mongo, per_cat):
+                    yield doc
+        else:
+            async for doc in LeadFinder._fetch_category_stream(city, category, radius_km, owner_id, mongo, limit):
+                yield doc
+
+    @staticmethod
+    async def _fetch_category_stream(
+        city: str,
+        category: str,
+        radius_km: float,
+        owner_id: str,
+        mongo,
+        max_results: int = 50
+    ):
+        """Async generator version of _fetch_category — yields each saved doc immediately."""
+        gmaps  = googlemaps.Client(key=settings.google_maps_api_key)
+        loop   = asyncio.get_event_loop()
+
+        geocode = await loop.run_in_executor(None, lambda: gmaps.geocode(city))
+        if not geocode:
+            return
+
+        city_lat = geocode[0]['geometry']['location']['lat']
+        city_lng = geocode[0]['geometry']['location']['lng']
+
+        place_type = CATEGORY_MAP.get(category.lower())
+        all_places = []
+        token = None
+
+        for page in range(3):
+            if len(all_places) >= max_results:
+                break
+            kwargs = {"location": (city_lat, city_lng), "radius": radius_km * 1000}
+            if place_type:
+                kwargs["type"] = place_type
+            else:
+                kwargs["keyword"] = category
+            if token:
+                kwargs["page_token"] = token
+                await asyncio.sleep(2)
+            resp = await loop.run_in_executor(None, lambda k=kwargs: gmaps.places_nearby(**k))
+            all_places.extend(resp.get("results", []))
+            token = resp.get("next_page_token")
+            if not token:
+                break
+
+        for place in all_places[:max_results]:
+            try:
+                detail = await loop.run_in_executor(
+                    None,
+                    lambda p=place: gmaps.place(
+                        p["place_id"],
+                        fields=["name", "website", "formatted_phone_number",
+                                "formatted_address", "rating", "geometry"]
+                    )["result"]
+                )
+            except Exception:
+                continue
+
+            website       = detail.get("website", "")
+            has_real_site = bool(website and "facebook.com" not in website and "instagram.com" not in website)
+            loc           = detail.get("geometry", {}).get("location", {})
+            lat_val       = loc.get("lat", 0)
+            lng_val       = loc.get("lng", 0)
+
+            doc = {
+                "_id":      ObjectId(),
+                "owner_id": owner_id,
+                "name":     detail.get("name"),
+                "company":  detail.get("name"),
+                "phone":    detail.get("formatted_phone_number"),
+                "address":  detail.get("formatted_address"),
+                "website":  website or None,
+                "has_website": has_real_site,
+                "category": category,
+                "status":   "lead",
+                "rating":   detail.get("rating"),
+                "lat":      lat_val,
+                "lng":      lng_val,
+                "location": {"type": "Point", "coordinates": [lng_val, lat_val],
+                             "address": detail.get("formatted_address"), "city": city, "country": "India"},
+                "source":   "google_maps",
+                "tags":     ["has-website"] if has_real_site else ["no-website"],
+                "notes":    f"Found via Google Maps. Rating: {detail.get('rating', 'N/A')}",
+                "social_links": {},
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow(),
+            }
+
+            existing = await mongo.clients.find_one({"owner_id": owner_id, "name": doc["name"], "address": doc["address"]})
+            if not existing:
+                await mongo.clients.insert_one(doc)
+                yield {**doc, "_id": str(doc["_id"])}
 
 
 lead_finder = LeadFinder()
