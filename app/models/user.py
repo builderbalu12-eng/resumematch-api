@@ -50,6 +50,13 @@ class UserResponse(BaseModel):
     northStar:        Optional[str] = None
     gmail_connected:  bool          = False
     gmail_email:      Optional[str] = None
+    portfolio_url:      Optional[str] = None
+    linkedin_url:       Optional[str] = None
+    github_url:         Optional[str] = None
+    available_for_hire: bool          = False
+    hourly_rate:        Optional[float] = None
+    freelance_skills:   List[str]     = Field(default_factory=list)
+    freelance_bio:      Optional[str] = None
 
     class Config:
         populate_by_name = True
@@ -60,6 +67,13 @@ class UserUpdate(BaseModel):
     lastName:  Optional[str] = None
     northStar: Optional[str] = None
     # email is NOT here — email cannot be changed ever
+    portfolio_url:      Optional[str]   = None
+    linkedin_url:       Optional[str]   = None
+    github_url:         Optional[str]   = None
+    available_for_hire: Optional[bool]  = None
+    hourly_rate:        Optional[float] = None
+    freelance_skills:   Optional[List[str]] = None
+    freelance_bio:      Optional[str]   = None
 
 
 class ChangePasswordRequest(BaseModel):

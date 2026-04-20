@@ -24,6 +24,7 @@ from app.routers import company_research_routes
 from app.routers import outreach_routes
 from app.routers import compensation_routes
 from app.routers import gmail_routes
+from app.routers import freelancer_routes
 
 
 app = FastAPI(
@@ -82,6 +83,7 @@ app.include_router(outreach_routes.router, prefix="/api")
 app.include_router(compensation_routes.router, prefix="/api")
 app.include_router(gmail_routes.router, prefix="/api")
 app.include_router(gmail_routes.gmail_callback_router)   # no /api prefix (OAuth callback)
+app.include_router(freelancer_routes.router, prefix="/api")
 
 
 
@@ -104,6 +106,9 @@ async def startup_event():
 
     from app.services.ai_provider_service import init_active_provider
     await init_active_provider()
+
+    # Freelancer search index
+    await mongo.users.create_index([("available_for_hire", 1), ("freelance_skills", 1)], background=True)
 
     # Seed job_evaluate feature cost if not already present
     existing = await mongo.credits_on_features.find_one({"feature": "job_evaluate"})

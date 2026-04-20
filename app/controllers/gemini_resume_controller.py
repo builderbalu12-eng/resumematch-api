@@ -75,6 +75,23 @@ async def process_extract_resume(
             extracted_data=result
         )
 
+        # Auto-save any contact URLs found in the resume to the user profile
+        try:
+            from app.services.mongo import mongo as _mongo
+            from bson import ObjectId
+            contact = result.get("contact", {}) or {}
+            url_patch = {}
+            if contact.get("website"):  url_patch["portfolio_url"] = contact["website"]
+            if contact.get("linkedin"): url_patch["linkedin_url"]  = contact["linkedin"]
+            if contact.get("github"):   url_patch["github_url"]    = contact["github"]
+            if url_patch:
+                await _mongo.users.update_one(
+                    {"_id": ObjectId(current_user)},
+                    {"$set": url_patch},
+                )
+        except Exception:
+            pass  # non-blocking — profile enrichment failure should not fail extraction
+
         result["creditsUsed"] = cost
         return ExtractResumeResponse(**result)
 

@@ -101,6 +101,43 @@ NOVA_TOOLS = [
         },
         "required": ["city", "category"],
     },
+    {
+        "name": "save_portfolio_url",
+        "description": (
+            "Save or update the user's portfolio, personal website, LinkedIn, or GitHub URL. "
+            "Call whenever the user shares or mentions any personal URL, portfolio site, LinkedIn profile, or GitHub link."
+        ),
+        "parameters": {
+            "url":      {"type": "string", "description": "The full URL including https://"},
+            "url_type": {"type": "string", "description": "One of: portfolio, linkedin, github, other"},
+        },
+        "required": ["url", "url_type"],
+    },
+    {
+        "name": "find_freelancers",
+        "description": (
+            "Search platform users who are available for hire as freelancers. "
+            "ALWAYS collect: (a) what skill/work type is needed AND (b) max budget (or user says 'any budget'). "
+            "Never call without at least a skill."
+        ),
+        "parameters": {
+            "skill":      {"type": "string", "description": "Skill or type of work needed (e.g. 'React developer', 'logo design', 'copywriting')"},
+            "location":   {"type": "string", "description": "Preferred location or '' for remote/any"},
+            "budget_max": {"type": "number", "description": "Max hourly rate in USD. Use 0 if user says 'any budget' or flexible."},
+        },
+        "required": ["skill", "budget_max"],
+    },
+    {
+        "name": "update_master_resume",
+        "description": (
+            "Replace the user's master resume with newly provided resume text from a file they uploaded in chat. "
+            "ONLY call AFTER the user has explicitly confirmed they want to replace their existing resume."
+        ),
+        "parameters": {
+            "resume_text": {"type": "string", "description": "Full extracted resume text from the uploaded file"},
+        },
+        "required": ["resume_text"],
+    },
 ]
 
 
@@ -172,8 +209,11 @@ def _build_system_prompt(user_doc: dict, resume_text: str) -> str:
 2. **Resume tailoring**: You need the full job description. If not provided, ask the user to paste it first.
 3. **Precision**: Never pass vague terms like "matching my profile" to `search_jobs`. Always use a concrete job title and city.
 4. **Tone**: Respond in lowercase, conversational, like a sharp career coach. Direct, warm, and brief.
-5. **Domain**: Help only with careers, jobs, resumes, business leads, and professional development. Politely decline anything else.
-6. **General chat**: If the user says hi, asks career questions, or wants advice — respond naturally without calling any tool."""
+5. **Domain**: Help with careers, jobs, resumes, business leads, freelancer search, and professional development. Politely decline anything unrelated.
+6. **General chat**: If the user says hi, asks career questions, or wants advice — respond naturally without calling any tool.
+7. **Portfolio / links**: If the user shares or mentions any URL (portfolio, LinkedIn, GitHub, personal site) — immediately call `save_portfolio_url`. Don't ask, just save it and confirm.
+8. **Freelancer search**: Before calling `find_freelancers`, ask for (a) what skill/work type they need and (b) their budget. Then call.
+9. **Resume file upload**: If a message starts with `__RESUME_FILE__` the user has attached a resume file. First reply: "i can see you've uploaded a resume — this will replace your current master resume. shall i go ahead?". Wait for confirmation ("yes"/"go ahead"/similar) then call `update_master_resume` with the resume text (everything after `__RESUME_FILE__\n`). If they say no, drop it."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -321,6 +361,21 @@ class AIChatService:
                     radius_km=float(tool_args.get("radius_km", 5.0)),
                     user_id=user_id,
                 ),
+                "save_portfolio_url":      lambda: self._handle_save_portfolio_url(
+                    url=tool_args.get("url", ""),
+                    url_type=tool_args.get("url_type", "portfolio"),
+                    user_id=user_id,
+                ),
+                "find_freelancers":        lambda: self._handle_find_freelancers(
+                    skill=tool_args.get("skill", ""),
+                    location=tool_args.get("location", ""),
+                    budget_max=float(tool_args.get("budget_max", 0)),
+                    user_id=user_id,
+                ),
+                "update_master_resume":    lambda: self._handle_update_master_resume(
+                    resume_text=tool_args.get("resume_text", ""),
+                    user_id=user_id,
+                ),
             }
 
             handler = dispatch.get(tool_name)
@@ -347,6 +402,9 @@ class AIChatService:
                     summary = f"Resume tailored. ATS score: {action_data.get('ats_score', '?')}%."
                 elif "grade" in action_data:
                     summary = f"Job scored {action_data['grade']} ({action_data.get('score', '?')}/5). {action_data.get('verdict', '')}."
+                elif "freelancers" in action_data:
+                    fl = action_data["freelancers"]
+                    summary = f"Found {len(fl)} freelancer(s) for '{action_data.get('skill', '')}': " + ", ".join(f["name"] for f in fl[:3])
 
             return {
                 "response":    response,
@@ -909,6 +967,128 @@ Return ONLY valid JSON: {{"message": "...", "characterCount": 250}}"""
         except Exception as e:
             print(f"generate_outreach handler error: {e}")
             return ("outreach message generation failed. please try again.", None, None)
+
+    # ── Save portfolio URL ─────────────────────────────────────────────────
+
+    async def _handle_save_portfolio_url(
+        self, url: str, url_type: str, user_id: str
+    ) -> Tuple[str, Optional[Dict], Optional[str]]:
+        try:
+            from app.utils.url_validator import validate_url
+            v = await validate_url(url)
+            if not v["valid"]:
+                return (
+                    f"that link doesn't seem to be reachable ({v['reason']}). could you double-check it?",
+                    None, None,
+                )
+            field_map = {
+                "portfolio": "portfolio_url",
+                "linkedin":  "linkedin_url",
+                "github":    "github_url",
+                "other":     "portfolio_url",
+            }
+            field  = field_map.get(url_type, "portfolio_url")
+            labels = {"portfolio": "portfolio", "linkedin": "LinkedIn", "github": "GitHub", "other": "portfolio"}
+            await mongo.users.update_one(
+                {"_id": ObjectId(user_id)},
+                {"$set": {field: url}},
+            )
+            return (
+                f"saved your {labels.get(url_type, 'portfolio')} link ✓ — it's on your profile now.",
+                None, None,
+            )
+        except Exception as e:
+            print(f"save_portfolio_url error: {e}")
+            return ("couldn't save the link right now — try again.", None, None)
+
+    # ── Find freelancers ───────────────────────────────────────────────────
+
+    async def _handle_find_freelancers(
+        self, skill: str, location: str, budget_max: float, user_id: str
+    ) -> Tuple[str, Optional[Dict], Optional[str]]:
+        try:
+            query: Dict = {"available_for_hire": True}
+            if skill.strip():
+                query["freelance_skills"] = {"$elemMatch": {"$regex": skill.strip(), "$options": "i"}}
+            if budget_max > 0:
+                query["$or"] = [
+                    {"hourly_rate": {"$lte": budget_max}},
+                    {"hourly_rate": None},
+                    {"hourly_rate": 0},
+                ]
+            freelancers = []
+            async for u in mongo.users.find(query).limit(10):
+                if str(u["_id"]) == user_id:
+                    continue
+                prefs = u.get("job_preferences") or u.get("jobPreferences") or {}
+                loc   = prefs.get("preferred_location") or prefs.get("preferredLocation") or ""
+                freelancers.append({
+                    "user_id":          str(u["_id"]),
+                    "name":             f"{u.get('firstName','')} {u.get('lastName','')}".strip(),
+                    "freelance_bio":    u.get("freelance_bio"),
+                    "freelance_skills": u.get("freelance_skills", []),
+                    "hourly_rate":      u.get("hourly_rate"),
+                    "portfolio_url":    u.get("portfolio_url"),
+                    "linkedin_url":     u.get("linkedin_url"),
+                    "github_url":       u.get("github_url"),
+                    "location":         loc,
+                })
+            if not freelancers:
+                return (
+                    f"no **{skill}** freelancers in our community yet. "
+                    "the pool grows as more users enable 'available for hire' on their profile.",
+                    None, None,
+                )
+            budget_str = f"under ${budget_max:.0f}/hr" if budget_max > 0 else "any budget"
+            return (
+                f"found **{len(freelancers)} {skill} freelancer{'s' if len(freelancers)!=1 else ''}** ({budget_str}):",
+                {"freelancers": freelancers, "skill": skill},
+                "freelancers_results",
+            )
+        except Exception as e:
+            print(f"find_freelancers error: {e}")
+            return ("couldn't search freelancers right now — try again.", None, None)
+
+    # ── Update master resume from chat file upload ─────────────────────────
+
+    async def _handle_update_master_resume(
+        self, resume_text: str, user_id: str
+    ) -> Tuple[str, Optional[Dict], Optional[str]]:
+        try:
+            from app.services.resume_processor import extract_resume_from_text
+            from app.services.incoming_resume_service import IncomingResumeService
+
+            if not resume_text.strip():
+                return ("the resume text was empty — please try attaching the file again.", None, None)
+
+            extracted = extract_resume_from_text(resume_text)
+            if "error" in extracted:
+                return ("couldn't parse that resume — make sure it's a valid PDF, DOCX, or TXT.", None, None)
+
+            await IncomingResumeService.save_or_update(
+                user_id=user_id,
+                raw_input=resume_text,
+                extracted_data=extracted,
+            )
+
+            # Auto-save contact URLs
+            contact = extracted.get("contact") or {}
+            url_patch: Dict = {}
+            if contact.get("website"):  url_patch["portfolio_url"] = contact["website"]
+            if contact.get("linkedin"): url_patch["linkedin_url"]  = contact["linkedin"]
+            if contact.get("github"):   url_patch["github_url"]    = contact["github"]
+            if url_patch:
+                await mongo.users.update_one({"_id": ObjectId(user_id)}, {"$set": url_patch})
+
+            name = contact.get("name", "your")
+            return (
+                f"done ✓ — **{name}'s** resume is now your master resume. "
+                "i'll use it for all future job matching, tailoring, and evaluations.",
+                None, None,
+            )
+        except Exception as e:
+            print(f"update_master_resume error: {e}")
+            return ("failed to update your resume — please try again.", None, None)
 
 
 # Singleton
