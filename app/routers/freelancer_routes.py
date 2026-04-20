@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from typing import List, Optional
-from app.dependencies import get_current_user
+from app.middleware.auth import get_current_user
 from app.services.mongo import mongo
 
 router = APIRouter(tags=["freelancers"])
