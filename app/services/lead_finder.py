@@ -73,8 +73,8 @@ class LeadFinder:
         city_lng = geocode[0]['geometry']['location']['lng']
 
         # Step 2 — nearby search
-        place_type = CATEGORY_MAP.get(category, category)
-        print(f"🔎 Searching place_type='{place_type}' near ({city_lat}, {city_lng}) radius={radius_km}km")
+        place_type = CATEGORY_MAP.get(category.lower())
+        print(f"🔎 Searching {'type=' + place_type if place_type else 'keyword=' + category!r} near ({city_lat}, {city_lng}) radius={radius_km}km")
         all_places = []
         token = None
 
@@ -83,9 +83,12 @@ class LeadFinder:
                 break
             kwargs = {
                 "location": (city_lat, city_lng),
-                "type": place_type,
                 "radius": radius_km * 1000,
             }
+            if place_type:
+                kwargs["type"] = place_type
+            else:
+                kwargs["keyword"] = category
             if token:
                 kwargs["page_token"] = token
                 await asyncio.sleep(2)

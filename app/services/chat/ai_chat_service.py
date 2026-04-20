@@ -93,13 +93,30 @@ NOVA_TOOLS = [
     },
     {
         "name": "find_business_leads",
-        "description": "Find local business leads via Google Maps (gyms, salons, restaurants, clinics, etc.) for sales prospecting.",
+        "description": "Find local business leads via Google Maps for sales prospecting. Supports ANY business type or category.",
         "parameters": {
             "city":      {"type": "string", "description": "City to search in (e.g. 'bangalore', 'mumbai', 'delhi')"},
-            "category":  {"type": "string", "description": "Business type (e.g. 'gym', 'salon', 'restaurant', 'clinic', 'jeweler')"},
+            "category":  {"type": "string", "description": "Any business type (e.g. 'gym', 'yoga studio', 'coffee shop', 'software company', 'dental clinic', 'bakery', 'clothing store')"},
             "radius_km": {"type": "number", "description": "Search radius in km (default 5)"},
         },
         "required": ["city", "category"],
+    },
+    {
+        "name": "analyze_lead",
+        "description": (
+            "Analyze a specific business lead: what services they likely need, "
+            "competitor context, review sentiment, and a one-line outreach pitch. "
+            "Call when the user asks to analyze or learn more about a specific business lead."
+        ),
+        "parameters": {
+            "name":        {"type": "string", "description": "Business name"},
+            "address":     {"type": "string", "description": "Business address"},
+            "category":    {"type": "string", "description": "Business category"},
+            "rating":      {"type": "number", "description": "Google Maps rating (0 if unknown)"},
+            "has_website": {"type": "boolean", "description": "Whether the business has a real website"},
+            "city":        {"type": "string", "description": "City the business is in"},
+        },
+        "required": ["name", "category"],
     },
     {
         "name": "save_portfolio_url",
@@ -213,7 +230,8 @@ def _build_system_prompt(user_doc: dict, resume_text: str) -> str:
 6. **General chat**: If the user says hi, asks career questions, or wants advice — respond naturally without calling any tool.
 7. **Portfolio / links**: If the user shares or mentions any URL (portfolio, LinkedIn, GitHub, personal site) — immediately call `save_portfolio_url`. Don't ask, just save it and confirm.
 8. **Freelancer search**: Before calling `find_freelancers`, ask for (a) what skill/work type they need and (b) their budget. Then call.
-9. **Resume file upload**: If a message starts with `__RESUME_FILE__` the user has attached a resume file. First reply: "i can see you've uploaded a resume — this will replace your current master resume. shall i go ahead?". Wait for confirmation ("yes"/"go ahead"/similar) then call `update_master_resume` with the resume text (everything after `__RESUME_FILE__\n`). If they say no, drop it."""
+9. **Resume file upload**: If a message starts with `__RESUME_FILE__` the user has attached a resume file. First reply: "i can see you've uploaded a resume — this will replace your current master resume. shall i go ahead?". Wait for confirmation ("yes"/"go ahead"/similar) then call `update_master_resume` with the resume text (everything after `__RESUME_FILE__\n`). If they say no, drop it.
+10. **Lead analysis**: If the message starts with `analyze lead:` — call `analyze_lead` immediately. Parse the pipe-separated string for name, address, rating, category, has_website, city."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -374,6 +392,15 @@ class AIChatService:
                 ),
                 "update_master_resume":    lambda: self._handle_update_master_resume(
                     resume_text=tool_args.get("resume_text", ""),
+                    user_id=user_id,
+                ),
+                "analyze_lead":            lambda: self._handle_analyze_lead(
+                    name=tool_args.get("name", ""),
+                    address=tool_args.get("address", ""),
+                    category=tool_args.get("category", ""),
+                    rating=float(tool_args.get("rating", 0)),
+                    has_website=bool(tool_args.get("has_website", False)),
+                    city=tool_args.get("city", ""),
                     user_id=user_id,
                 ),
             }
@@ -653,10 +680,12 @@ class AIChatService:
                     "Name":        l.get("name", ""),
                     "Phone":       l.get("phone", ""),
                     "Address":     l.get("address", ""),
-                    "Website":     l.get("website", ""),
-                    "Has Website": "Yes" if l.get("has_website") else "No",
-                    "Rating":      l.get("rating", ""),
+                    "Website":     l.get("website") or "",
+                    "Has Website": bool(l.get("has_website")),
+                    "Rating":      l.get("rating"),
                     "Category":    l.get("category", category),
+                    "lat":         l.get("lat"),
+                    "lng":         l.get("lng"),
                 }
                 for l in raw_leads
             ]
@@ -669,6 +698,41 @@ class AIChatService:
         except Exception as e:
             print(f"find_leads handler error: {e}")
             return ("i'm having trouble finding leads right now. please try again.", None, None)
+
+    # ── Analyze lead ───────────────────────────────────────────────────────
+
+    async def _handle_analyze_lead(
+        self, name: str, address: str, category: str,
+        rating: float, has_website: bool, city: str, user_id: str
+    ) -> Tuple[str, Optional[Dict], Optional[str]]:
+        try:
+            cost = await CreditsService.get_feature_cost("lead_analyze")
+            if cost > 0:
+                ok, msg = await CreditsService.deduct_credits(user_id, amount=cost, feature="lead_analyze")
+                if not ok:
+                    return (f"you need credits to analyze leads. {msg}\n\nvisit /pricing to top up.", None, None)
+
+            website_str = "yes" if has_website else "no"
+            rating_str  = f"{rating}/5" if rating else "unknown"
+            prompt = (
+                f"You are a B2B sales consultant helping identify opportunities.\n\n"
+                f"Business: {name}\n"
+                f"Category: {category}\n"
+                f"City: {city or 'unknown'}\n"
+                f"Address: {address or 'not provided'}\n"
+                f"Google Maps rating: {rating_str}\n"
+                f"Has website: {website_str}\n\n"
+                f"In 3-4 concise sentences covering:\n"
+                f"1. What digital or marketing services this business most likely needs right now\n"
+                f"2. How they compare to typical competitors in their sector\n"
+                f"3. A single punchy cold outreach opening line you would use\n\n"
+                f"Be direct. No bullet points. Plain prose."
+            )
+            analysis = await call_ai_text_async(prompt, temperature=0.6, max_tokens=250)
+            return (analysis.strip(), None, None)
+        except Exception as e:
+            print(f"analyze_lead handler error: {e}")
+            return ("couldn't generate analysis right now. please try again.", None, None)
 
     # ── Tailor resume ──────────────────────────────────────────────────────
 
