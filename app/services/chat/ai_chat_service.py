@@ -162,6 +162,64 @@ NOVA_TOOLS = [
 # Resume helper
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _build_tailored_text(result: dict) -> str:
+    lines = []
+    if result.get("summary"):
+        lines += ["## Summary", result["summary"], ""]
+    if result.get("skills"):
+        lines += ["## Skills", ", ".join(result["skills"]), ""]
+    for exp in result.get("experience", []):
+        lines.append(f"## {exp.get('title')} at {exp.get('company')}")
+        for b in exp.get("description", []):
+            lines.append(f"- {b}")
+        lines.append("")
+    for proj in result.get("projects", []):
+        lines += [f"## {proj.get('title')}", proj.get("description", ""), ""]
+    return "\n".join(lines)
+
+
+def _merge_tailored_resume(result: dict, orig: dict) -> dict:
+    orig_exp_map = {
+        (e.get("title", "").lower(), e.get("company", "").lower()): e
+        for e in orig.get("experience", [])
+    }
+    merged_exp = []
+    for te in result.get("experience", []):
+        key = (te.get("title", "").lower(), te.get("company", "").lower())
+        oe  = orig_exp_map.get(key, {})
+        merged_exp.append({
+            "title":              te.get("title", oe.get("title", "")),
+            "company":            te.get("company", oe.get("company", "")),
+            "location":           oe.get("location"),
+            "startDate":          oe.get("startDate", ""),
+            "endDate":            oe.get("endDate"),
+            "isCurrentlyWorking": oe.get("isCurrentlyWorking", False),
+            "description":        te.get("description", []),
+        })
+
+    orig_proj_map = {p.get("title", "").lower(): p for p in orig.get("projects", [])}
+    merged_proj = []
+    for tp in result.get("projects", []):
+        op = orig_proj_map.get(tp.get("title", "").lower(), {})
+        merged_proj.append({
+            "title":        tp.get("title", ""),
+            "description":  tp.get("description", ""),
+            "technologies": op.get("technologies", []),
+            "link":         op.get("link"),
+            "date":         op.get("date"),
+        })
+
+    return {
+        "contact":        orig.get("contact", {}),
+        "summary":        result.get("summary", ""),
+        "skills":         result.get("skills", []),
+        "experience":     merged_exp,
+        "education":      orig.get("education", []),
+        "projects":       merged_proj,
+        "certifications": orig.get("certifications", []),
+    }
+
+
 async def _get_user_resume_text(user_id: str) -> str:
     """Fetch and flatten the user's latest resume from incoming_resumes."""
     doc = await mongo.incoming_resumes.find_one(
@@ -450,6 +508,76 @@ class AIChatService:
                        "response": tool_result.get("response", f"found {len(freelancers)} freelancers."),
                        "intent": tool_name, "action_type": None,
                        "action_data": {"count": len(freelancers), "skill": tool_args.get("skill", "")},
+                       "timestamp": timestamp}
+
+            # ── Tailor resume: progress events then done ──────────────────
+            elif tool_name == "tailor_resume":
+                job_description = tool_args.get("job_description", "")
+
+                yield {"type": "progress", "action_type": "tailored_resume",
+                       "step": 1, "total_steps": 3,
+                       "step_label": "Analyzing job description keywords…"}
+
+                try:
+                    resume_text = await _get_user_resume_text(user_id)
+                except ValueError:
+                    yield {"type": "done",
+                           "response": "you haven't uploaded a resume yet. go to **[/upload](/upload)** first.",
+                           "intent": tool_name, "action_type": None, "action_data": None,
+                           "timestamp": timestamp}
+                    return
+
+                if not resume_text.strip():
+                    yield {"type": "done",
+                           "response": "your resume appears to be empty. please re-upload at **[/upload](/upload)**.",
+                           "intent": tool_name, "action_type": None, "action_data": None,
+                           "timestamp": timestamp}
+                    return
+
+                cost = await CreditsService.get_feature_cost("tailor_resume")
+                if cost > 0:
+                    ok, msg = await CreditsService.deduct_credits(user_id, amount=cost, feature="tailor_resume")
+                    if not ok:
+                        yield {"type": "done",
+                               "response": f"not enough credits to tailor your resume. {msg}\n\nvisit /pricing to top up.",
+                               "intent": tool_name, "action_type": None, "action_data": None,
+                               "timestamp": timestamp}
+                        return
+
+                yield {"type": "progress", "action_type": "tailored_resume",
+                       "step": 2, "total_steps": 3,
+                       "step_label": "Tailoring resume for maximum ATS compatibility…"}
+
+                loop   = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None, lambda: do_tailor_resume(resume_text, job_description)
+                )
+
+                yield {"type": "progress", "action_type": "tailored_resume",
+                       "step": 3, "total_steps": 3,
+                       "step_label": "Computing ATS score and generating insights…"}
+
+                ats_score   = result.get("estimatedATSScore", 0)
+                notes       = result.get("optimizationNotes", [])
+                notes_md    = "\n".join(f"- {n}" for n in notes[:6])
+                orig_struct = await self._get_user_resume_structured(user_id)
+                tailored    = _build_tailored_text(result)
+                resume_data = _merge_tailored_resume(result, orig_struct)
+                score_bd    = result.get("scoreBreakdown", {})
+
+                yield {"type": "done",
+                       "response": f"resume tailored! estimated ATS score: **{ats_score}%**\n\n**key improvements:**\n{notes_md}\n\ndownload your tailored resume below.",
+                       "intent": tool_name,
+                       "action_type": "tailored_resume",
+                       "action_data": {
+                           "tailored_resume":    tailored,
+                           "resume_data":        resume_data,
+                           "ats_score":          ats_score,
+                           "score_breakdown":    score_bd,
+                           "optimization_notes": notes,
+                           "job_title":          result.get("jobTitle", ""),
+                           "company":            result.get("company", ""),
+                       },
                        "timestamp": timestamp}
 
             # ── All other tools: run normally, single done event ───────────
@@ -870,6 +998,14 @@ class AIChatService:
             print(f"analyze_lead handler error: {e}")
             return ("couldn't generate analysis right now. please try again.", None, None)
 
+    # ── Resume structured data ────────────────────────────────────────────
+
+    async def _get_user_resume_structured(self, user_id: str) -> dict:
+        doc = await mongo.incoming_resumes.find_one(
+            {"user_id": user_id}, sort=[("created_at", -1)]
+        )
+        return (doc or {}).get("extracted_data") or {}
+
     # ── Tailor resume ──────────────────────────────────────────────────────
 
     async def _handle_tailor_resume(
@@ -894,15 +1030,26 @@ class AIChatService:
                 if not ok:
                     return (f"not enough credits to tailor your resume. {msg}\n\nvisit /pricing to top up.", None, None)
 
-            result    = do_tailor_resume(resume_text, job_description)
-            tailored  = result.get("tailoredResume", "")
-            ats_score = result.get("estimatedATSScore", 0)
-            notes     = result.get("optimizationNotes", [])
-            notes_md  = "\n".join(f"- {n}" for n in notes[:6])
+            result      = do_tailor_resume(resume_text, job_description)
+            ats_score   = result.get("estimatedATSScore", 0)
+            notes       = result.get("optimizationNotes", [])
+            notes_md    = "\n".join(f"- {n}" for n in notes[:6])
+            orig_struct = await self._get_user_resume_structured(user_id)
+            tailored    = _build_tailored_text(result)
+            resume_data = _merge_tailored_resume(result, orig_struct)
+            score_bd    = result.get("scoreBreakdown", {})
 
             return (
                 f"resume tailored! estimated ATS score: **{ats_score}%**\n\n**key improvements:**\n{notes_md}\n\ndownload your tailored resume below.",
-                {"tailored_resume": tailored, "ats_score": ats_score, "optimization_notes": notes},
+                {
+                    "tailored_resume":    tailored,
+                    "resume_data":        resume_data,
+                    "ats_score":          ats_score,
+                    "score_breakdown":    score_bd,
+                    "optimization_notes": notes,
+                    "job_title":          result.get("jobTitle", ""),
+                    "company":            result.get("company", ""),
+                },
                 "tailored_resume",
             )
 
