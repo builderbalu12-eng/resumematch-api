@@ -1,5 +1,4 @@
 from fastapi import HTTPException
-from app.services.payment.razorpay_service import razorpay_service
 from app.services.mongo import mongo
 from app.models.payment.plan import PlanCreate, PlanUpdate, PlanOut
 from bson import ObjectId
@@ -23,24 +22,6 @@ class PlanController:
 
     @staticmethod
     async def create_plan(data: PlanCreate, current_user: str) -> Dict:
-        razorpay_plan_id = None
-
-        # Only call Razorpay for paid + recurring plans
-        if data.amount > 0 and data.is_recurring:
-            period, interval = CYCLE_TO_PERIOD.get(data.billing_cycle, ("monthly", 1))
-            rp_data = {
-                "period": period,
-                "interval": interval,
-                "item": {
-                    "name": data.plan_name,
-                    "amount": int(data.amount * 100),
-                    "currency": data.currency.upper(),
-                    "description": data.description or data.plan_name
-                }
-            }
-            rp_plan = razorpay_service.create_plan(rp_data)
-            razorpay_plan_id = rp_plan["id"]
-
         doc = {
             "_id": ObjectId(),
             "plan_name": data.plan_name,
@@ -51,7 +32,7 @@ class PlanController:
             "credits_per_cycle": data.credits_per_cycle,   # ← ADDED
             "points": data.points,
             "description": data.description,
-            "razorpay_plan_id": razorpay_plan_id,
+            "razorpay_plan_id": None,  # Cashfree doesn't use gateway plan IDs
             "is_active": data.is_active,
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()

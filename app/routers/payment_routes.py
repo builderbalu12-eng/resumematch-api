@@ -284,7 +284,8 @@ async def get_billing_history(
 # ────────────────────────────────────────────────
 
 @router.post("/webhook", response_model=dict)
-async def razorpay_webhook(request: Request):
+async def cashfree_webhook(request: Request):
     payload = await request.body()
-    signature = request.headers.get("X-Razorpay-Signature")
-    return await WebhookService.handle_razorpay_webhook(payload, signature)
+    signature = request.headers.get("x-webhook-signature")
+    timestamp = request.headers.get("x-webhook-timestamp")
+    return await WebhookService.handle_cashfree_webhook(payload, signature, timestamp)
