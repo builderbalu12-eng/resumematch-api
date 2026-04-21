@@ -844,8 +844,10 @@ class AIChatService:
             # Generate per-job pitch using the active AI provider
             try:
                 pitch_prompt = (
-                    f"write brief 1-2 sentence lowercase conversational pitches for a job seeker targeting: {search_term}.\n"
-                    f"for each job below, explain why it's a great fit. output ONLY a JSON array of strings — no markdown, no extra text.\n\n"
+                    f"you are Nova, an AI career coach. write brief 1-2 sentence lowercase conversational explanations "
+                    f"addressed TO the job seeker (use 'your background', 'you bring', 'you can', not 'my' or 'i').\n"
+                    f"for each job below, explain why it's a great fit for someone targeting: {search_term}.\n"
+                    f"output ONLY a JSON array of strings — no markdown, no extra text.\n\n"
                     + "\n".join(
                         f"{i+1}. {j['Title']} at {j['Company']} ({j['Location']})"
                         for i, j in enumerate(jobs_base)
