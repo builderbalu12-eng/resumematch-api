@@ -2,12 +2,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from typing import Dict
 import json
+import asyncio
+from datetime import datetime
 from pydantic import BaseModel
 from app.controllers.chat.chat_controller import chat_controller
 from app.models.chat.schemas import SendMessageRequest
 from app.middleware.auth import get_current_user
 from app.services.credits_service import CreditsService
-from app.services.chat.ai_chat_service import ai_chat_service
+from app.services.chat.ai_chat_service import (
+    ai_chat_service, _get_user_resume_text,
+    _build_tailored_text, _merge_tailored_resume,
+)
 from app.services.chat.session_service import session_service
 from bson import ObjectId
 
@@ -146,6 +151,94 @@ async def send_message_stream(
             action_type=final_action_type,
             action_data=final_action_data if final_action_data else None,
         )
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+class TailorForJobRequest(BaseModel):
+    job_url: str = ""
+    job_title: str = ""
+    company: str = ""
+    location: str = ""
+
+
+@router.post("/tailor-for-job/stream")
+async def tailor_for_job_stream(
+    data: TailorForJobRequest,
+    current_user: str = Depends(get_current_user),
+):
+    """Fetch JD from URL, tailor the user's resume, stream 3-step progress."""
+    async def event_generator():
+        ts = datetime.utcnow().isoformat()
+        try:
+            # ── Credits check ────────────────────────────────────────────────
+            cost = await CreditsService.get_feature_cost("tailor_resume")
+            if cost > 0:
+                ok, msg = await CreditsService.deduct_credits(current_user, amount=cost, feature="tailor_resume")
+                if not ok:
+                    yield f"data: {json.dumps({'type': 'error', 'message': f'Not enough credits. {msg}'})}\n\n"
+                    return
+
+            # ── Step 1: Fetch JD from URL ────────────────────────────────────
+            yield f"data: {json.dumps({'type': 'progress', 'step': 1, 'total_steps': 3, 'step_label': 'Fetching job description from URL…'})}\n\n"
+
+            job_description = ""
+            if data.job_url:
+                try:
+                    import httpx
+                    from bs4 import BeautifulSoup
+                    async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+                        resp = await client.get(
+                            data.job_url,
+                            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                        )
+                        soup = BeautifulSoup(resp.text, "html.parser")
+                        for el in soup(["script", "style", "nav", "footer", "header"]):
+                            el.decompose()
+                        job_description = soup.get_text(separator=" ", strip=True)[:6000]
+                except Exception as e:
+                    print(f"[tailor-for-job] URL fetch failed: {e}")
+
+            if not job_description.strip():
+                job_description = (
+                    f"Job Title: {data.job_title}\n"
+                    f"Company: {data.company}\n"
+                    f"Location: {data.location}"
+                )
+
+            # ── Step 2: Get resume + tailor ──────────────────────────────────
+            yield f"data: {json.dumps({'type': 'progress', 'step': 2, 'total_steps': 3, 'step_label': 'Tailoring resume for maximum ATS compatibility…'})}\n\n"
+
+            try:
+                resume_text = await _get_user_resume_text(current_user)
+            except ValueError:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'No resume found. Upload at /upload first.'})}\n\n"
+                return
+
+            from app.services.resume_processor import tailor_resume as do_tailor_resume
+            loop   = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, lambda: do_tailor_resume(resume_text, job_description))
+
+            # ── Step 3: Build output ─────────────────────────────────────────
+            yield f"data: {json.dumps({'type': 'progress', 'step': 3, 'total_steps': 3, 'step_label': 'Computing ATS score and generating insights…'})}\n\n"
+
+            orig_struct  = await ai_chat_service._get_user_resume_structured(current_user)
+            tailored     = _build_tailored_text(result)
+            resume_data  = _merge_tailored_resume(result, orig_struct)
+            ats_score    = result.get("estimatedATSScore", 0)
+            notes        = result.get("optimizationNotes", [])
+            score_bd     = result.get("scoreBreakdown", {})
+
+            yield f"data: {json.dumps({'type': 'done', 'action_data': {'tailored_resume': tailored, 'resume_data': resume_data, 'ats_score': ats_score, 'score_breakdown': score_bd, 'optimization_notes': notes, 'job_title': data.job_title or result.get('jobTitle', ''), 'company': data.company or result.get('company', '')}})}\n\n"
+
+        except Exception as e:
+            print(f"[tailor-for-job] error: {e}")
+            import traceback; traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Something went wrong. Please try again.'})}\n\n"
 
     return StreamingResponse(
         event_generator(),
