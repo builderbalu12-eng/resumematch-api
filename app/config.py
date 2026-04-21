@@ -63,9 +63,9 @@ class Settings(BaseSettings):
     smtp_from_email: str = ""
     smtp_from_name: str = "ResumeMatch"
 
-    # ── Razorpay / Payments ──────────────────────────────────────
-    razorpay_key_id: str
-    razorpay_key_secret: str
+    # ── Razorpay / Payments ── DISABLED (migrating to Cashfree) ──
+    razorpay_key_id: str = ""       # TODO: remove after Cashfree integration
+    razorpay_key_secret: str = ""   # TODO: remove after Cashfree integration
     razorpay_webhook_secret: Optional[str] = None
 
     # ── OpenClaw (whatever this service/gateway is) ──────────────
