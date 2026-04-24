@@ -415,6 +415,43 @@ Job Description:
     return _call_ai(prompt, temperature=0.35)
 
 
+def generate_skills_roadmap(resume: str, job_description: str) -> Dict:
+    prompt = f"""You are a career coach. Identify the top 2 skill gaps between this resume and job description, then generate a practical week-by-week learning roadmap for each.
+
+Return ONLY valid JSON (no markdown, no extra text):
+
+{{
+  "skillGaps": ["skill1", "skill2"],
+  "roadmaps": [
+    {{
+      "skill": "skill name",
+      "timeEstimate": "~2-3 weeks",
+      "overview": "Why this skill is critical for this role (2 sentences max).",
+      "steps": [
+        {{"label": "Days 1-2", "action": "Specific action with free resources mentioned by name."}},
+        {{"label": "Days 3-5", "action": "Hands-on project step."}},
+        {{"label": "Week 2", "action": "Deeper dive or build project."}},
+        {{"label": "Week 3", "action": "Practice and apply to resume/portfolio."}}
+      ],
+      "resources": [
+        {{"type": "YouTube", "name": "Video title and channel name"}},
+        {{"type": "Course", "name": "Course name and platform"}},
+        {{"type": "Documentation", "name": "Official docs title"}},
+        {{"type": "Practice", "name": "Specific practice resource or project idea"}}
+      ]
+    }}
+  ]
+}}
+
+Resume:
+{resume}
+
+Job Description:
+{job_description}
+"""
+    return _call_ai(prompt, temperature=0.3)
+
+
 def analyze_and_tailor(page_text: str, resume_json: dict, configured_sections: list) -> dict:
     """
     Single combined Gemini call: extract job data + tailor resume + ATS score.

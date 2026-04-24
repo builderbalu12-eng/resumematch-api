@@ -15,6 +15,7 @@ from app.controllers.gemini_resume_controller import (
     process_ats_score,
     process_parse_job,
     process_generate_cover_letter,
+    process_generate_skills_roadmap,
     process_check_completeness,
     process_analyze_and_tailor,
 )
@@ -26,6 +27,7 @@ from app.models.gemini.schemas import (
     AtsScoreRequest, AtsScoreResponse,
     ParseJobRequest, ParseJobResponse,
     GenerateCoverLetterRequest, GenerateCoverLetterResponse,
+    SkillsRoadmapRequest, SkillsRoadmapResponse,
     CheckCompletenessRequest, CheckCompletenessResponse,
     AnalyzeAndTailorRequest, AnalyzeAndTailorResponse,
 )
@@ -302,6 +304,18 @@ async def gemini_generate_cover_letter(
     Credits used: 3
     """
     return await process_generate_cover_letter(request, current_user)
+
+
+@router.post("/skills-roadmap", response_model=SkillsRoadmapResponse)
+async def gemini_skills_roadmap(
+    request: SkillsRoadmapRequest,
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Generate a skills learning roadmap for top skill gaps.
+    Credits used: 1
+    """
+    return await process_generate_skills_roadmap(request, current_user)
 
 
 @router.post("/check-completeness", response_model=CheckCompletenessResponse)

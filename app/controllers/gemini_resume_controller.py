@@ -16,6 +16,7 @@ from app.services.resume_processor import (
     calculate_ats_score,
     parse_job_description,
     generate_cover_letter,
+    generate_skills_roadmap,
     check_resume_completeness,
     analyze_and_tailor,
 )
@@ -26,6 +27,7 @@ from app.models.gemini.schemas import (
     AtsScoreRequest, AtsScoreResponse,
     ParseJobRequest, ParseJobResponse,
     GenerateCoverLetterRequest, GenerateCoverLetterResponse,
+    SkillsRoadmapRequest, SkillsRoadmapResponse,
     CheckCompletenessRequest, CheckCompletenessResponse,
     AnalyzeAndTailorRequest, AnalyzeAndTailorResponse,
 )
@@ -230,3 +232,22 @@ async def process_check_completeness(
         await CreditsService.refund_credits(current_user, cost, "Completeness check failed")
         logger.exception("Completeness check failed")
         raise HTTPException(500, "Completeness check failed")
+
+
+async def process_generate_skills_roadmap(
+    request: SkillsRoadmapRequest,
+    current_user: str
+) -> SkillsRoadmapResponse:
+    cost = await CreditsService.get_feature_cost("skills_roadmap")
+    success, message = await CreditsService.deduct_credits(current_user, amount=cost, feature="skills_roadmap")
+    if not success:
+        raise HTTPException(403, message or "Insufficient credits")
+
+    try:
+        result = generate_skills_roadmap(request.resume, request.jobDescription)
+        result["creditsUsed"] = cost
+        return SkillsRoadmapResponse(**result)
+    except Exception:
+        await CreditsService.refund_credits(current_user, cost, "Skills roadmap generation failed")
+        logger.exception("Skills roadmap generation failed")
+        raise HTTPException(500, "Skills roadmap generation failed")

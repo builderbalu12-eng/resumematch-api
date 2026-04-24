@@ -117,6 +117,35 @@ class GenerateCoverLetterResponse(BaseModel):
     creditsUsed: Literal[3] = 3   # ← changed
 
 
+class SkillsRoadmapRequest(GeminiRequestBase):
+    resume: str = Field(..., min_length=100, description="Resume text")
+    jobDescription: str = Field(..., min_length=100, description="Job description text")
+
+
+class SkillsRoadmapStep(BaseModel):
+    label: str
+    action: str
+
+
+class SkillsRoadmapResource(BaseModel):
+    type: str
+    name: str
+
+
+class SkillsRoadmapEntry(BaseModel):
+    skill: str
+    timeEstimate: str
+    overview: str
+    steps: List[SkillsRoadmapStep] = Field(default_factory=list)
+    resources: List[SkillsRoadmapResource] = Field(default_factory=list)
+
+
+class SkillsRoadmapResponse(BaseModel):
+    skillGaps: List[str] = Field(default_factory=list)
+    roadmaps: List[SkillsRoadmapEntry] = Field(default_factory=list)
+    creditsUsed: Literal[1] = 1
+
+
 class CheckCompletenessResponse(BaseModel):
     completenessScore: int = Field(..., ge=0, le=100)
     sections: Dict[
