@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     # ── Cashfree / Payments ──────────────────────────────────────
     cashfree_app_id: str = ""
     cashfree_secret_key: str = ""
+    cashfree_env: str = "sandbox"   # "sandbox" or "production" — set in Railway
 
     # ── Razorpay (disabled) ──────────────────────────────────────
     razorpay_key_id: str = ""
