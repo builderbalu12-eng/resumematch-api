@@ -146,6 +146,22 @@ class SkillsRoadmapResponse(BaseModel):
     creditsUsed: Literal[1] = 1
 
 
+class KeywordDistributionRequest(GeminiRequestBase):
+    resume: str = Field(..., min_length=100, description="Resume text or JSON")
+    jobDescription: str = Field(..., min_length=100, description="Job description text")
+
+
+class KeywordDistributionCategory(BaseModel):
+    name: Literal["Skills Relevant", "Experience Relevant", "Projects Relevant", "Others Relevant", "Not Relevant"]
+    value: int = Field(..., ge=0)
+    keywords: List[str] = Field(default_factory=list)
+
+
+class KeywordDistributionResponse(BaseModel):
+    categories: List[KeywordDistributionCategory]
+    creditsUsed: Literal[1] = 1
+
+
 class CheckCompletenessResponse(BaseModel):
     completenessScore: int = Field(..., ge=0, le=100)
     sections: Dict[

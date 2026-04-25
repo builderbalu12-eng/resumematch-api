@@ -452,6 +452,51 @@ Job Description:
     return _call_ai(prompt, temperature=0.3)
 
 
+def keyword_distribution(resume: str, job_description: str) -> Dict:
+    """
+    Categorize JD keywords by where they best match in the resume.
+    Returns 5 fixed categories: Skills / Experience / Projects / Others / Not Relevant.
+    Provider-agnostic via _call_ai().
+    """
+    prompt = f"""You are an ATS keyword analyzer.
+
+Read the resume and job description below. Extract the most important keywords from the job
+description (skills, tools, responsibilities, qualifications) and assign each to exactly ONE of
+these 5 buckets based on where it best matches the resume:
+
+1. "Skills Relevant"     — appears in the resume's Skills section.
+2. "Experience Relevant" — appears in a job/experience description.
+3. "Projects Relevant"   — appears in a project description.
+4. "Others Relevant"     — appears elsewhere in the resume (education, certifications, etc.).
+5. "Not Relevant"        — appears in the JD but is missing from the resume.
+
+Return ONLY valid JSON, no markdown, no commentary:
+
+{{
+  "categories": [
+    {{"name": "Skills Relevant",     "value": 0, "keywords": []}},
+    {{"name": "Experience Relevant", "value": 0, "keywords": []}},
+    {{"name": "Projects Relevant",   "value": 0, "keywords": []}},
+    {{"name": "Others Relevant",     "value": 0, "keywords": []}},
+    {{"name": "Not Relevant",        "value": 0, "keywords": []}}
+  ]
+}}
+
+Rules:
+- "value" is the count of keywords in that bucket.
+- Each keyword goes in exactly one bucket — no duplicates across buckets.
+- All 5 categories MUST be present, even if "value" is 0.
+- Aim for 8–25 keywords total across all buckets.
+
+Resume:
+{resume}
+
+Job Description:
+{job_description}
+"""
+    return _call_ai(prompt, temperature=0.2)
+
+
 def analyze_and_tailor(page_text: str, resume_json: dict, configured_sections: list) -> dict:
     """
     Single combined Gemini call: extract job data + tailor resume + ATS score.

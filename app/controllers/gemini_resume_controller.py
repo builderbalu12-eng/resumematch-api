@@ -19,6 +19,7 @@ from app.services.resume_processor import (
     generate_skills_roadmap,
     check_resume_completeness,
     analyze_and_tailor,
+    keyword_distribution,
 )
 from app.models.gemini.schemas import (
     AnalyzeResumeRequest, AnalyzeResumeResponse,
@@ -30,6 +31,7 @@ from app.models.gemini.schemas import (
     SkillsRoadmapRequest, SkillsRoadmapResponse,
     CheckCompletenessRequest, CheckCompletenessResponse,
     AnalyzeAndTailorRequest, AnalyzeAndTailorResponse,
+    KeywordDistributionRequest, KeywordDistributionResponse,
 )
 from app.services.incoming_resume_service import IncomingResumeService
 
@@ -251,3 +253,35 @@ async def process_generate_skills_roadmap(
         await CreditsService.refund_credits(current_user, cost, "Skills roadmap generation failed")
         logger.exception("Skills roadmap generation failed")
         raise HTTPException(500, "Skills roadmap generation failed")
+
+
+async def process_keyword_distribution(
+    request: KeywordDistributionRequest,
+    current_user: str
+) -> KeywordDistributionResponse:
+    cost = await CreditsService.get_feature_cost("keyword_distribution")
+    success, message = await CreditsService.deduct_credits(current_user, amount=cost, feature="keyword_distribution")
+    if not success:
+        raise HTTPException(403, message or "Insufficient credits")
+
+    try:
+        result = keyword_distribution(request.resume, request.jobDescription)
+        if not isinstance(result, dict) or "categories" not in result:
+            raise ValueError(f"AI returned malformed payload: {result}")
+
+        # Ensure all 5 categories are present (fill missing ones with zero).
+        REQUIRED = ["Skills Relevant", "Experience Relevant", "Projects Relevant", "Others Relevant", "Not Relevant"]
+        existing = {c.get("name"): c for c in result.get("categories", []) if isinstance(c, dict)}
+        normalized = []
+        for name in REQUIRED:
+            c = existing.get(name) or {"name": name, "value": 0, "keywords": []}
+            normalized.append({
+                "name": name,
+                "value": int(c.get("value") or len(c.get("keywords") or [])),
+                "keywords": list(c.get("keywords") or [])[:25],
+            })
+        return KeywordDistributionResponse(categories=normalized, creditsUsed=cost)
+    except Exception:
+        await CreditsService.refund_credits(current_user, cost, "Keyword distribution failed")
+        logger.exception("Keyword distribution failed")
+        raise HTTPException(500, "Keyword distribution failed")

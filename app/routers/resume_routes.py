@@ -18,6 +18,7 @@ from app.controllers.gemini_resume_controller import (
     process_generate_skills_roadmap,
     process_check_completeness,
     process_analyze_and_tailor,
+    process_keyword_distribution,
 )
 
 from app.models.gemini.schemas import (
@@ -30,6 +31,7 @@ from app.models.gemini.schemas import (
     SkillsRoadmapRequest, SkillsRoadmapResponse,
     CheckCompletenessRequest, CheckCompletenessResponse,
     AnalyzeAndTailorRequest, AnalyzeAndTailorResponse,
+    KeywordDistributionRequest, KeywordDistributionResponse,
 )
 
 router = APIRouter(tags=["resume"])
@@ -316,6 +318,19 @@ async def gemini_skills_roadmap(
     Credits used: 1
     """
     return await process_generate_skills_roadmap(request, current_user)
+
+
+@router.post("/keyword-distribution", response_model=KeywordDistributionResponse)
+async def gemini_keyword_distribution(
+    request: KeywordDistributionRequest,
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Categorize JD keywords across 5 buckets (Skills / Experience / Projects / Others / Not Relevant).
+    Powers the keyword-distribution pie chart on the Resume Optimizer.
+    Credits used: 1
+    """
+    return await process_keyword_distribution(request, current_user)
 
 
 @router.post("/check-completeness", response_model=CheckCompletenessResponse)

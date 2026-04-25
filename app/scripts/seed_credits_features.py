@@ -117,6 +117,22 @@ FEATURES = [
         "description":       "Credits charged per AI chat message sent",
         "is_active":         True,
     },
+    {
+        "feature":           "keyword_distribution",
+        "display_name":      "Keyword Match Distribution",
+        "credits_per_unit":  1,
+        "unit":              "per analysis",
+        "description":       "Credits charged per keyword distribution categorization for the Optimizer pie chart",
+        "is_active":         True,
+    },
+    {
+        "feature":           "skills_roadmap",
+        "display_name":      "Skills Learning Roadmap",
+        "credits_per_unit":  1,
+        "unit":              "per roadmap",
+        "description":       "Credits charged per skills-roadmap generation",
+        "is_active":         True,
+    },
 ]
 
 
