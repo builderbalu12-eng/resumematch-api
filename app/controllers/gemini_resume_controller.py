@@ -49,6 +49,7 @@ async def process_analyze_resume(
 
     try:
         result = analyze_resume_match(request.resume, request.jobDescription)
+        await CreditsService.commit_ai_tokens()
         result["creditsUsed"] = cost
         return AnalyzeResumeResponse(**result)
     except Exception:
@@ -68,6 +69,7 @@ async def process_extract_resume(
 
     try:
         result = extract_resume_from_text(request.documentText)
+        await CreditsService.commit_ai_tokens()
 
         if "error" in result:
             await CreditsService.refund_credits(current_user, cost, "Resume extraction returned error")
@@ -118,6 +120,7 @@ async def process_tailor_resume(
 
     try:
         result = tailor_resume(request.resume, request.jobDescription)
+        await CreditsService.commit_ai_tokens()
         if "error" in result:
             await CreditsService.refund_credits(current_user, cost, "Tailor resume: Gemini error")
             raise HTTPException(503, "AI service temporarily unavailable. Credits refunded.")
@@ -142,6 +145,7 @@ async def process_ats_score(
 
     try:
         result = calculate_ats_score(request.resume, request.jobDescription)
+        await CreditsService.commit_ai_tokens()
         if "error" in result:
             await CreditsService.refund_credits(current_user, cost, "ATS score: Gemini error")
             raise HTTPException(503, "AI service temporarily unavailable. Credits refunded.")
@@ -166,6 +170,7 @@ async def process_parse_job(
 
     try:
         result = parse_job_description(request.jobDescription)
+        await CreditsService.commit_ai_tokens()
         result["creditsUsed"] = cost
         return ParseJobResponse(**result)
     except Exception:
@@ -185,6 +190,7 @@ async def process_generate_cover_letter(
 
     try:
         result = generate_cover_letter(request.resume, request.jobDescription)
+        await CreditsService.commit_ai_tokens()
         result["creditsUsed"] = cost
         return GenerateCoverLetterResponse(**result)
     except Exception:
@@ -204,6 +210,7 @@ async def process_analyze_and_tailor(
 
     try:
         result = analyze_and_tailor(request.pageText, request.resume, request.configuredSections)
+        await CreditsService.commit_ai_tokens()
         if "error" in result:
             await CreditsService.refund_credits(current_user, cost, "Analyze and tailor: Gemini error")
             raise HTTPException(503, "AI service temporarily unavailable. Credits refunded.")
@@ -228,6 +235,7 @@ async def process_check_completeness(
 
     try:
         result = check_resume_completeness(request.resume)
+        await CreditsService.commit_ai_tokens()
         result["creditsUsed"] = cost
         return CheckCompletenessResponse(**result)
     except Exception:
@@ -247,6 +255,7 @@ async def process_generate_skills_roadmap(
 
     try:
         result = generate_skills_roadmap(request.resume, request.jobDescription)
+        await CreditsService.commit_ai_tokens()
         result["creditsUsed"] = cost
         return SkillsRoadmapResponse(**result)
     except Exception:
@@ -266,6 +275,7 @@ async def process_keyword_distribution(
 
     try:
         result = keyword_distribution(request.resume, request.jobDescription)
+        await CreditsService.commit_ai_tokens()
         if not isinstance(result, dict) or "categories" not in result:
             raise ValueError(f"AI returned malformed payload: {result}")
 

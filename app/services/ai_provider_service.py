@@ -15,6 +15,7 @@ Exported callables:
 import json
 import time
 import logging
+import contextvars
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -30,6 +31,31 @@ _active_provider: Dict = {"value": "claude"}
 _prov_cache: Dict = {}
 _prov_cache_time: float = 0.0
 _PROV_CACHE_TTL = 60  # seconds
+
+# ── Per-request token accumulator ────────────────────────────
+# call_claude() adds tokens here; controllers read and persist them onto the
+# matching credits_log entry via CreditsService.commit_ai_tokens().
+_request_tokens_var: "contextvars.ContextVar[Optional[Dict[str, int]]]" = (
+    contextvars.ContextVar("ai_request_tokens", default=None)
+)
+
+
+def reset_request_tokens() -> None:
+    _request_tokens_var.set({"input": 0, "output": 0})
+
+
+def get_request_tokens() -> Dict[str, int]:
+    val = _request_tokens_var.get()
+    return dict(val) if val else {"input": 0, "output": 0}
+
+
+def _accumulate_tokens(input_t: int, output_t: int) -> None:
+    cur = _request_tokens_var.get()
+    if cur is None:
+        cur = {"input": 0, "output": 0}
+        _request_tokens_var.set(cur)
+    cur["input"] += int(input_t or 0)
+    cur["output"] += int(output_t or 0)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -108,6 +134,14 @@ def call_claude(
                 temperature=min(temperature, 1.0),  # Claude max temp is 1.0
                 messages=[{"role": "user", "content": prompt}],
             )
+
+            try:
+                _accumulate_tokens(
+                    getattr(response.usage, "input_tokens", 0) or 0,
+                    getattr(response.usage, "output_tokens", 0) or 0,
+                )
+            except Exception:
+                pass
 
             raw_text = response.content[0].text.strip()
             cleaned = _clean_json(raw_text)
@@ -191,6 +225,13 @@ async def call_ai_text_async(
                 temperature=min(temperature, 1.0),
                 messages=[{"role": "user", "content": prompt}],
             )
+            try:
+                _accumulate_tokens(
+                    getattr(response.usage, "input_tokens", 0) or 0,
+                    getattr(response.usage, "output_tokens", 0) or 0,
+                )
+            except Exception:
+                pass
             return response.content[0].text.strip()
         except Exception as e:
             logger.warning(f"Claude text async call failed: {e}")
@@ -274,6 +315,13 @@ async def call_ai_chat_async(
                 system=system_instruction,
                 messages=messages,
             )
+            try:
+                _accumulate_tokens(
+                    getattr(response.usage, "input_tokens", 0) or 0,
+                    getattr(response.usage, "output_tokens", 0) or 0,
+                )
+            except Exception:
+                pass
             return response.content[0].text.strip()
         except Exception as e:
             logger.warning(f"Claude chat async call failed: {e}")
@@ -408,6 +456,10 @@ async def _call_claude_with_tools_async(
 
         input_tokens  = getattr(response.usage, "input_tokens",  0) or 0
         output_tokens = getattr(response.usage, "output_tokens", 0) or 0
+        try:
+            _accumulate_tokens(input_tokens, output_tokens)
+        except Exception:
+            pass
 
         for block in response.content:
             if getattr(block, "type", None) == "tool_use":

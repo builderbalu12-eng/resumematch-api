@@ -1,9 +1,20 @@
 # app/services/credits_service.py
+import contextvars
+import logging
 from app.services.mongo import mongo
 from bson import ObjectId
 from datetime import datetime
 from fastapi import HTTPException
-from typing import Tuple
+from typing import Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+# Tracks the credits_log _id of the most recent deduction in this request,
+# so the AI call layer can update it with real input/output token counts via
+# CreditsService.commit_ai_tokens() once the model response returns.
+_current_log_id_var: "contextvars.ContextVar[Optional[ObjectId]]" = (
+    contextvars.ContextVar("credits_current_log_id", default=None)
+)
 
 
 class CreditsService:
@@ -88,7 +99,9 @@ class CreditsService:
             }
         )
 
-        await mongo.credits_log.insert_one({
+        from app.services.ai_provider_service import reset_request_tokens
+
+        log_doc = {
             "user_id":       user_id,
             "type":          "deduction",
             "amount":        amount,
@@ -100,7 +113,11 @@ class CreditsService:
             "input_tokens":  0,
             "output_tokens": 0,
             "created_at":    datetime.utcnow(),
-        })
+        }
+        result = await mongo.credits_log.insert_one(log_doc)
+        # Stash log_id + reset token accumulator so call_claude() tokens land here.
+        _current_log_id_var.set(result.inserted_id)
+        reset_request_tokens()
 
         return True, f"Deducted {amount}. Remaining: {new_credits:.1f}"
 
@@ -123,6 +140,35 @@ class CreditsService:
                 "balance_after": new,
                 "created_at":    datetime.utcnow(),
             })
+
+    @staticmethod
+    async def commit_ai_tokens() -> None:
+        """
+        Persist the tokens accumulated by call_claude() during this request
+        onto the credits_log entry created by the matching deduct_credits().
+        Safe to call when no AI call happened — it's a no-op then.
+        """
+        from app.services.ai_provider_service import get_request_tokens, reset_request_tokens
+
+        log_id = _current_log_id_var.get()
+        tokens = get_request_tokens()
+        if log_id is None:
+            return
+        if not tokens["input"] and not tokens["output"]:
+            return
+        try:
+            await mongo.credits_log.update_one(
+                {"_id": log_id},
+                {"$set": {
+                    "input_tokens":  tokens["input"],
+                    "output_tokens": tokens["output"],
+                }},
+            )
+        except Exception as e:
+            logger.warning(f"commit_ai_tokens failed for log {log_id}: {e}")
+        finally:
+            _current_log_id_var.set(None)
+            reset_request_tokens()
 
     @staticmethod
     async def log_deduction(
