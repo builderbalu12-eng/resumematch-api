@@ -76,6 +76,14 @@ class ExtractResumeResponse(BaseModel):
     creditsUsed: Literal[2] = 2   # ← changed
 
 
+class SectionScore(BaseModel):
+    """Per-section ATS match score. One entry per section the user has."""
+    section: str = Field(..., description="Section name as it appears in the resume (Skills, Experience, Projects, etc.)")
+    score: int = Field(..., ge=0, le=100, description="0–100 match score for this section vs the JD")
+    jdKeywordsFound: int = Field(default=0, ge=0)
+    jdKeywordsTotal: int = Field(default=0, ge=0)
+
+
 class TailorResumeResponse(BaseModel):
     jobTitle: Optional[str] = None
     company: Optional[str] = None
@@ -83,8 +91,18 @@ class TailorResumeResponse(BaseModel):
     skills: List[str] = Field(default_factory=list)
     experience: List[Dict] = Field(default_factory=list)
     projects: List[Dict] = Field(default_factory=list)
+    education: List[Dict] = Field(default_factory=list)
+    certifications: List[str] = Field(default_factory=list)
+    achievements: List[str] = Field(default_factory=list)
+    publications: List[str] = Field(default_factory=list)
+    hobbies: List[str] = Field(default_factory=list)
+    customSections: Dict[str, str] = Field(default_factory=dict)
     optimizationNotes: List[str] = Field(default_factory=list)
+    keywordsAdded: List[str] = Field(default_factory=list)
+    keywordsPresent: List[str] = Field(default_factory=list)
+    sectionScores: List[SectionScore] = Field(default_factory=list)
     estimatedATSScore: int = Field(default=0, ge=0, le=100)
+    originalAtsScore: int = Field(default=0, ge=0, le=100)
     creditsUsed: Literal[2] = 2
 
 

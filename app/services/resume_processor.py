@@ -249,43 +249,73 @@ def tailor_resume(resume: str, job_description: str) -> Dict:
     prompt = f"""You are an expert ATS optimization specialist and professional resume writer.
 Your goal is to tailor this resume for MAXIMUM ATS compatibility against the given job description.
 
+## ABSOLUTE RULES — DO NOT VIOLATE
+1. **STRICT SECTION PRESERVATION.** Return EXACTLY the sections the user gave you. Do NOT invent new sections. Do NOT merge sections. Do NOT move bullets between sections — a Project bullet must stay in `projects`, never under `experience`. An Education line must stay in `education`. Custom sections like "Volunteering" must stay in `customSections`.
+2. **Section presence is faithful.** If the input resume has no Projects section, return `"projects": []`. If it has no Education, return `"education": []`. Do not fabricate sections to fill the JSON.
+3. **Each section is enhanced individually** for ATS keyword density. Rewrite within a section, never across sections.
+4. **No fabrication.** Keep all original facts — do not invent experience, employers, credentials, projects, or metrics.
+
 ## Step 1 — Extract ALL keywords from the job description
-Identify every required skill, tool, technology, certification, and key phrase.
-Pay attention to exact terminology (e.g. "cross-functional collaboration", "CI/CD pipelines", "agile methodology").
+Identify every required skill, tool, technology, certification, and key phrase. Note exact terminology (e.g. "cross-functional collaboration", "CI/CD pipelines", "agile methodology") — ATS matches exact strings.
 
-## Step 2 — Rewrite the resume sections
-- Rewrite the summary to highlight the candidate's most relevant experience for this specific role
-- Reorder skills by descending relevance to the job description (most relevant first)
-- Rewrite experience bullets to incorporate JD keywords naturally and mirror exact JD phrasing (ATS matches exact strings)
-- Quantify achievements using numbers already present in the original — NEVER fabricate metrics
-- Rewrite project descriptions to emphasize technologies and outcomes that match the JD
-- Keep ALL original facts — do not invent experience, credentials, employers, or metrics
+## Step 2 — Rewrite each section (only sections the user actually has)
+- **summary**: 2–3 sentence professional summary emphasizing JD-relevant experience.
+- **skills**: reorder by descending JD relevance; keep all originals.
+- **experience**: rewrite bullets with JD keywords + exact JD phrasing; quantify only with numbers already in the original.
+- **projects**: rewrite project descriptions to emphasize technologies/outcomes that match the JD. Each project keeps its title and any technologies the user listed.
+- **education**: keep as-is unless the JD specifically calls for credentials the user has — then surface them.
+- **certifications / achievements / publications / hobbies**: keep verbatim or lightly rephrase to add JD-relevant phrasing where honest.
+- **customSections**: a free-form `Record<string, string>` map (e.g. {{"Volunteering": "...", "Languages": "..."}}). Preserve every key the user provided. Enhance the value text the same way as other sections.
 
-## Step 3 — Score
-Estimate a realistic ATS compatibility score from 0 to 100 based on keyword coverage.
+## Step 3 — Per-section match score (drives the UI breakdown bars)
+For each section the user has, compute a 0–100 match score = how strongly that section reflects the JD's keywords AFTER rewriting. Also count `jdKeywordsFound` (this section's matches against JD keyword list) and `jdKeywordsTotal` (total JD keywords). Skip sections the user does not have.
 
-Return ONLY valid JSON with these exact keys. Use the EXACT original job titles and company names so they can be matched:
+## Step 4 — Overall scores + diff
+- `estimatedATSScore`: 0–100 overall ATS score AFTER tailoring.
+- `originalAtsScore`: 0–100 estimated score for the ORIGINAL resume (before any rewrite).
+- `keywordsAdded`: JD keywords newly surfaced by the rewrite (max 8).
+- `keywordsPresent`: JD keywords already present in the original resume (max 8).
+- `optimizationNotes`: 3–5 bullets describing the most impactful changes.
+
+Return ONLY valid JSON. Use EXACT original job titles, company names, project titles so they can be matched:
 {{
-  "summary": "tailored 2-3 sentence professional summary emphasizing JD-relevant experience",
-  "skills": ["most relevant skill to JD", "second most relevant", "...all original skills reordered"],
+  "summary": "...",
+  "skills": ["...", "..."],
   "experience": [
     {{
-      "title": "EXACT original job title from resume",
-      "company": "EXACT original company name from resume",
-      "description": ["rewritten bullet with JD keyword + metric", "second bullet", "..."]
+      "title": "EXACT original job title",
+      "company": "EXACT original company",
+      "description": ["bullet 1", "bullet 2", "..."]
     }}
   ],
   "projects": [
     {{
-      "title": "EXACT original project title from resume",
-      "description": "rewritten 2-3 sentence description emphasizing JD-relevant technologies and quantified impact"
+      "title": "EXACT original project title",
+      "description": "rewritten 2-3 sentence description"
     }}
   ],
-  "jobTitle": "actual job title extracted from the job description",
-  "company": "actual company name extracted from the job description",
-  "optimizationNotes": ["key change 1", "key change 2"],
-  "estimatedATSScore": number
+  "education": [
+    {{ "degree": "...", "field": "...", "institution": "...", "graduationDate": "..." }}
+  ],
+  "certifications": ["...", "..."],
+  "achievements": ["...", "..."],
+  "publications": ["...", "..."],
+  "hobbies": ["...", "..."],
+  "customSections": {{"Section Name": "section body text"}},
+  "jobTitle": "actual job title extracted from the JD",
+  "company": "actual company extracted from the JD",
+  "optimizationNotes": ["...", "..."],
+  "keywordsAdded": ["...", "..."],
+  "keywordsPresent": ["...", "..."],
+  "sectionScores": [
+    {{"section": "Skills",       "score": 0, "jdKeywordsFound": 0, "jdKeywordsTotal": 0}},
+    {{"section": "Experience",   "score": 0, "jdKeywordsFound": 0, "jdKeywordsTotal": 0}}
+  ],
+  "estimatedATSScore": 0,
+  "originalAtsScore": 0
 }}
+
+Reminder: only include sections the user actually has. Empty arrays / empty strings / empty objects for missing ones.
 
 Original Resume:
 {resume}
@@ -295,7 +325,7 @@ Job Description:
 """
     result = _call_ai(prompt, temperature=0.0)
 
-    # Cross-validate ATS score: rebuild plain text from structured result for objective scoring
+    # Cross-validate the overall ATS score by rebuilding plain text and re-scoring objectively
     try:
         plain_parts = []
         if result.get("summary"):
@@ -307,6 +337,10 @@ Job Description:
             plain_parts.extend(exp.get("description", []))
         for proj in result.get("projects", []):
             plain_parts.append(f"{proj.get('title', '')} {proj.get('description', '')}")
+        for sec_name, sec_body in (result.get("customSections") or {}).items():
+            plain_parts.append(f"{sec_name} {sec_body}")
+        for c in result.get("certifications", []) or []:
+            plain_parts.append(c)
         tailored_plain_text = "\n".join(plain_parts)
 
         ats_result = calculate_ats_score(tailored_plain_text, job_description)
@@ -315,7 +349,7 @@ Job Description:
         if ats_result.get("scoreBreakdown"):
             result["scoreBreakdown"] = ats_result["scoreBreakdown"]
     except Exception:
-        pass  # keep Gemini's self-reported score as fallback
+        pass  # keep model's self-reported score as fallback
 
     return result
 

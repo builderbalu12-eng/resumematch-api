@@ -23,7 +23,9 @@ from app.services.mongo import mongo
 logger = logging.getLogger(__name__)
 
 # ── In-memory active provider (sync-safe) ────────────────────
-_active_provider: Dict = {"value": "gemini"}
+# CLAUDE-ONLY: Gemini is fully disabled. The toggle is kept for back-compat
+# of admin endpoints but every value is forced to "claude" here. Do NOT change.
+_active_provider: Dict = {"value": "claude"}
 
 _prov_cache: Dict = {}
 _prov_cache_time: float = 0.0
@@ -35,57 +37,27 @@ _PROV_CACHE_TTL = 60  # seconds
 # ─────────────────────────────────────────────────────────────
 
 def get_active_provider_sync() -> str:
-    """Sync accessor — no DB hit. Used by call_ai() on every request."""
-    return _active_provider.get("value", "gemini")
+    """Sync accessor. CLAUDE-ONLY — always returns 'claude'."""
+    return "claude"
 
 
 async def get_active_provider() -> str:
-    """Async — reads DB with 60s cache. Used by admin endpoints."""
-    global _prov_cache, _prov_cache_time
-
-    now = time.monotonic()
-    if _prov_cache and (now - _prov_cache_time) < _PROV_CACHE_TTL:
-        return _prov_cache.get("value", "gemini")
-
-    try:
-        doc = await mongo.admin_settings.find_one({"_id": "active_ai_provider"})
-        provider = doc.get("provider", "gemini") if doc else "gemini"
-    except Exception as e:
-        logger.warning(f"Could not read active_ai_provider from DB: {e}")
-        provider = "gemini"
-
-    _prov_cache = {"value": provider}
-    _prov_cache_time = now
-    _active_provider["value"] = provider
-    return provider
+    """Async accessor. CLAUDE-ONLY — always returns 'claude'."""
+    return "claude"
 
 
 async def set_active_provider(provider: str, admin_email: str) -> None:
-    """Persist the active provider to DB and update sync cache immediately."""
-    global _prov_cache_time
-
-    if provider not in ("gemini", "claude"):
-        raise ValueError(f"Invalid provider: {provider!r}. Must be 'gemini' or 'claude'.")
-
-    await mongo.admin_settings.update_one(
-        {"_id": "active_ai_provider"},
-        {"$set": {
-            "provider":   provider,
-            "updated_at": datetime.utcnow(),
-            "updated_by": admin_email,
-        }},
-        upsert=True,
-    )
-    _active_provider["value"] = provider
-    _prov_cache_time = 0.0  # invalidate async cache
-    logger.info(f"Active AI provider switched to '{provider}' by {admin_email}")
+    """No-op shim. CLAUDE-ONLY — provider toggle is disabled.
+    Kept for API compatibility with admin_routes.py callers."""
+    if provider != "claude":
+        logger.info(f"Ignored provider switch to '{provider}' from {admin_email}; system is Claude-only.")
+    # do nothing — _active_provider stays "claude"
 
 
 async def init_active_provider() -> None:
-    """Called once at startup to load active provider from DB."""
-    provider = await get_active_provider()
-    _active_provider["value"] = provider
-    logger.info(f"✅ Active AI provider loaded: {provider}")
+    """No-op startup hook. CLAUDE-ONLY."""
+    _active_provider["value"] = "claude"
+    logger.info("✅ AI provider locked to Claude (Gemini disabled)")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -175,17 +147,10 @@ def call_ai(
     model: Optional[str] = None,
 ) -> Dict:
     """
-    Drop-in replacement for call_gemini().
-    Routes to Gemini or Claude based on the active provider.
+    Unified sync JSON call. CLAUDE-ONLY — Gemini path is disabled.
     Returns a parsed JSON Dict or {"error": ..., "message": ...}.
     """
-    provider = get_active_provider_sync()
-    if provider == "claude":
-        return call_claude(prompt, temperature=temperature, max_tokens=max_tokens, model=model)
-
-    # Gemini path — import here to avoid circular imports
-    from app.services.resume_processor import call_gemini
-    return call_gemini(prompt, temperature=temperature, max_tokens=max_tokens, model=model)
+    return call_claude(prompt, temperature=temperature, max_tokens=max_tokens, model=model)
 
 
 # ─────────────────────────────────────────────────────────────
