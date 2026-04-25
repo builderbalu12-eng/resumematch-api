@@ -1,14 +1,15 @@
 """
-Unified AI provider service — routes every AI call to either Gemini or Claude
-based on the active provider setting stored in MongoDB.
+Claude-only AI provider service. Every AI call routes to Anthropic Claude.
 
 Exported callables:
   call_ai(prompt, ...)                      → sync  → Dict (JSON)
   call_ai_text_async(prompt, ...)           → async → str  (plain text)
   call_ai_chat_async(history, msg, ...)     → async → str  (chat response)
-  get_active_provider_sync()                → sync  → "gemini" | "claude"
-  get_active_provider()                     → async → "gemini" | "claude"
-  set_active_provider(provider, email)      → async → None
+  call_ai_with_tools_async(...)             → async → dict (tool-call response)
+  send_tool_result_async(...)               → async → str  (final reply after tool)
+  get_active_provider_sync()                → sync  → "claude"
+  get_active_provider()                     → async → "claude"
+  set_active_provider(...)                  → async → None  (no-op shim, kept for compat)
   init_active_provider()                    → async → None  (call at startup)
 """
 
@@ -24,7 +25,7 @@ from app.services.mongo import mongo
 logger = logging.getLogger(__name__)
 
 # ── In-memory active provider (sync-safe) ────────────────────
-# CLAUDE-ONLY: Gemini is fully disabled. The toggle is kept for back-compat
+# Claude is the only supported provider. The toggle is kept for back-compat
 # of admin endpoints but every value is forced to "claude" here. Do NOT change.
 _active_provider: Dict = {"value": "claude"}
 
@@ -63,17 +64,17 @@ def _accumulate_tokens(input_t: int, output_t: int) -> None:
 # ─────────────────────────────────────────────────────────────
 
 def get_active_provider_sync() -> str:
-    """Sync accessor. CLAUDE-ONLY — always returns 'claude'."""
+    """Sync accessor. Claude is the only provider — always returns 'claude'."""
     return "claude"
 
 
 async def get_active_provider() -> str:
-    """Async accessor. CLAUDE-ONLY — always returns 'claude'."""
+    """Async accessor. Claude is the only provider — always returns 'claude'."""
     return "claude"
 
 
 async def set_active_provider(provider: str, admin_email: str) -> None:
-    """No-op shim. CLAUDE-ONLY — provider toggle is disabled.
+    """No-op shim. Provider toggle is disabled (Claude-only).
     Kept for API compatibility with admin_routes.py callers."""
     if provider != "claude":
         logger.info(f"Ignored provider switch to '{provider}' from {admin_email}; system is Claude-only.")
@@ -81,9 +82,9 @@ async def set_active_provider(provider: str, admin_email: str) -> None:
 
 
 async def init_active_provider() -> None:
-    """No-op startup hook. CLAUDE-ONLY."""
+    """Claude-only startup hook."""
     _active_provider["value"] = "claude"
-    logger.info("✅ AI provider locked to Claude (Gemini disabled)")
+    logger.info("✅ AI provider locked to Claude")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -110,7 +111,6 @@ def call_claude(
 ) -> Dict:
     """
     Single-turn Claude call — returns parsed JSON Dict.
-    Mirrors call_gemini() signature and error format exactly.
     """
     try:
         import anthropic as _anthropic
@@ -171,7 +171,7 @@ def call_claude(
 
 
 # ─────────────────────────────────────────────────────────────
-# Unified sync JSON call  (replaces call_gemini everywhere)
+# Unified sync JSON call
 # ─────────────────────────────────────────────────────────────
 
 def call_ai(
@@ -181,7 +181,7 @@ def call_ai(
     model: Optional[str] = None,
 ) -> Dict:
     """
-    Unified sync JSON call. CLAUDE-ONLY — Gemini path is disabled.
+    Unified sync JSON call. Routes to Claude.
     Returns a parsed JSON Dict or {"error": ..., "message": ...}.
     """
     return call_claude(prompt, temperature=temperature, max_tokens=max_tokens, model=model)
@@ -198,65 +198,39 @@ async def call_ai_text_async(
     model: Optional[str] = None,
 ) -> str:
     """
-    Async text-only call — returns raw string, not JSON.
+    Async text-only Claude call — returns raw string, not JSON.
     Used by intent_classifier and any other non-JSON text generation.
     """
-    import asyncio
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return ""
 
-    provider = get_active_provider_sync()
+    from app.services.claude_config_service import get_active_config_sync
+    cfg = get_active_config_sync()
+    if not cfg.get("api_key"):
+        return ""
 
-    if provider == "claude":
+    active_model = model or cfg["model"]
+    try:
+        client = _anthropic.AsyncAnthropic(api_key=cfg["api_key"])
+        response = await client.messages.create(
+            model=active_model,
+            max_tokens=max_tokens,
+            temperature=min(temperature, 1.0),
+            messages=[{"role": "user", "content": prompt}],
+        )
         try:
-            import anthropic as _anthropic
-        except ImportError:
-            return ""
-
-        from app.services.claude_config_service import get_active_config_sync
-        cfg = get_active_config_sync()
-        if not cfg.get("api_key"):
-            return ""
-
-        active_model = model or cfg["model"]
-        try:
-            client = _anthropic.AsyncAnthropic(api_key=cfg["api_key"])
-            response = await client.messages.create(
-                model=active_model,
-                max_tokens=max_tokens,
-                temperature=min(temperature, 1.0),
-                messages=[{"role": "user", "content": prompt}],
+            _accumulate_tokens(
+                getattr(response.usage, "input_tokens", 0) or 0,
+                getattr(response.usage, "output_tokens", 0) or 0,
             )
-            try:
-                _accumulate_tokens(
-                    getattr(response.usage, "input_tokens", 0) or 0,
-                    getattr(response.usage, "output_tokens", 0) or 0,
-                )
-            except Exception:
-                pass
-            return response.content[0].text.strip()
-        except Exception as e:
-            logger.warning(f"Claude text async call failed: {e}")
-            return ""
-
-    else:
-        # Gemini path
-        import google.generativeai as genai
-        from app.services.gemini_config_service import get_active_config_sync as gcfg_sync
-        cfg = gcfg_sync()
-        try:
-            gmodel = genai.GenerativeModel(
-                model_name=model or cfg["model"],
-                generation_config={
-                    "temperature": temperature,
-                    "max_output_tokens": max_tokens,
-                    "top_p": 0.8,
-                    "top_k": 40,
-                },
-            )
-            response = await gmodel.generate_content_async(prompt)
-            return response.text.strip()
-        except Exception as e:
-            logger.warning(f"Gemini text async call failed: {e}")
-            return ""
+        except Exception:
+            pass
+        return response.content[0].text.strip()
+    except Exception as e:
+        logger.warning(f"Claude text async call failed: {e}")
+        return ""
 
 
 # ─────────────────────────────────────────────────────────────
@@ -272,87 +246,57 @@ async def call_ai_chat_async(
     model: Optional[str] = None,
 ) -> str:
     """
-    Async multi-turn chat call.
-    history format: [{"role": "user"|"model", "parts": ["text"]}]  (Gemini native format)
+    Async multi-turn Claude chat call.
+    history format: [{"role": "user"|"model"|"assistant", "parts": ["text"]}]
+    (the legacy "model" role is mapped to "assistant" for Claude.)
     Returns the assistant's response as a plain string.
     """
-    provider = get_active_provider_sync()
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return "Claude package not installed."
 
-    if provider == "claude":
+    from app.services.claude_config_service import get_active_config_sync
+    cfg = get_active_config_sync()
+    if not cfg.get("api_key"):
+        return "Claude API key not set. Please add it in Admin → Resources → Claude."
+
+    active_model = model or cfg["model"]
+
+    # Normalise history → Claude messages format
+    messages = []
+    for msg in history:
+        role = "user" if msg.get("role") == "user" else "assistant"
+        content = msg.get("parts", [""])[0] if msg.get("parts") else ""
+        if content:
+            messages.append({"role": role, "content": content})
+
+    # Claude requires history to start with a user message
+    while messages and messages[0]["role"] != "user":
+        messages.pop(0)
+
+    messages.append({"role": "user", "content": user_message})
+
+    try:
+        client = _anthropic.AsyncAnthropic(api_key=cfg["api_key"])
+        response = await client.messages.create(
+            model=active_model,
+            max_tokens=min(max_tokens, 8192),
+            temperature=min(temperature, 1.0),
+            system=system_instruction,
+            messages=messages,
+        )
         try:
-            import anthropic as _anthropic
-        except ImportError:
-            return "Claude package not installed."
-
-        from app.services.claude_config_service import get_active_config_sync
-        cfg = get_active_config_sync()
-        if not cfg.get("api_key"):
-            return "Claude API key not set. Please add it in Admin → Resources → Claude."
-
-        active_model = model or cfg["model"]
-
-        # Convert Gemini history format → Claude messages format
-        messages = []
-        for msg in history:
-            role = "user" if msg.get("role") == "user" else "assistant"
-            content = msg.get("parts", [""])[0] if msg.get("parts") else ""
-            if content:
-                messages.append({"role": role, "content": content})
-
-        # Ensure history starts with a user message (Claude requirement)
-        while messages and messages[0]["role"] != "user":
-            messages.pop(0)
-
-        # Add the current user message
-        messages.append({"role": "user", "content": user_message})
-
-        try:
-            client = _anthropic.AsyncAnthropic(api_key=cfg["api_key"])
-            response = await client.messages.create(
-                model=active_model,
-                max_tokens=min(max_tokens, 8192),
-                temperature=min(temperature, 1.0),
-                system=system_instruction,
-                messages=messages,
+            _accumulate_tokens(
+                getattr(response.usage, "input_tokens", 0) or 0,
+                getattr(response.usage, "output_tokens", 0) or 0,
             )
-            try:
-                _accumulate_tokens(
-                    getattr(response.usage, "input_tokens", 0) or 0,
-                    getattr(response.usage, "output_tokens", 0) or 0,
-                )
-            except Exception:
-                pass
-            return response.content[0].text.strip()
-        except Exception as e:
-            logger.warning(f"Claude chat async call failed: {e}")
-            return "I'm having trouble generating a response right now. Please try again."
-
-    else:
-        # Gemini path — preserve existing chat session behaviour
-        import google.generativeai as genai
-        from app.services.gemini_config_service import get_active_config_sync as gcfg_sync
-        cfg = gcfg_sync()
-        try:
-            gmodel = genai.GenerativeModel(
-                model_name=model or cfg["model"],
-                system_instruction=system_instruction,
-                generation_config={
-                    "temperature": temperature,
-                    "max_output_tokens": max_tokens,
-                    "top_p": 0.8,
-                    "top_k": 40,
-                },
-            )
-            # Ensure history starts with user (Gemini requirement)
-            h = list(history)
-            while h and h[0]["role"] != "user":
-                h.pop(0)
-            chat = gmodel.start_chat(history=h)
-            resp = await chat.send_message_async(user_message)
-            return resp.text.strip()
-        except Exception as e:
-            logger.warning(f"Gemini chat async call failed: {e}")
-            return "I'm having trouble generating a response right now. Please try again."
+        except Exception:
+            pass
+        return response.content[0].text.strip()
+    except Exception as e:
+        logger.warning(f"Claude chat async call failed: {e}")
+        return "I'm having trouble generating a response right now. Please try again."
 
 
 # ─────────────────────────────────────────────────────────────
@@ -378,44 +322,8 @@ def _convert_tools_for_claude(tools: list) -> list:
     ]
 
 
-def _convert_tools_for_gemini(tools: list) -> list:
-    """Convert provider-agnostic tool defs → Gemini FunctionDeclaration list."""
-    import google.generativeai as genai
-
-    type_map = {
-        "string":  genai.protos.Type.STRING,
-        "integer": genai.protos.Type.INTEGER,
-        "number":  genai.protos.Type.NUMBER,
-        "boolean": genai.protos.Type.BOOLEAN,
-        "array":   genai.protos.Type.ARRAY,
-        "object":  genai.protos.Type.OBJECT,
-    }
-
-    declarations = []
-    for t in tools:
-        properties = {
-            k: genai.protos.Schema(
-                type=type_map.get(v["type"], genai.protos.Type.STRING),
-                description=v.get("description", ""),
-            )
-            for k, v in t["parameters"].items()
-        }
-        declarations.append(
-            genai.protos.FunctionDeclaration(
-                name=t["name"],
-                description=t["description"],
-                parameters=genai.protos.Schema(
-                    type=genai.protos.Type.OBJECT,
-                    properties=properties,
-                    required=t.get("required", []),
-                ),
-            )
-        )
-    return declarations
-
-
 # ─────────────────────────────────────────────────────────────
-# Provider-specific tool-calling implementations
+# Claude tool-calling implementation
 # ─────────────────────────────────────────────────────────────
 
 async def _call_claude_with_tools_async(
@@ -496,71 +404,8 @@ async def _call_claude_with_tools_async(
         return {"type": "text", "text": "I'm having trouble right now. Please try again.", "input_tokens": 0, "output_tokens": 0, "provider_state": {"provider": "claude"}}
 
 
-async def _call_gemini_with_tools_async(
-    system_prompt: str,
-    history: list,
-    message: str,
-    tools: list,
-) -> dict:
-    import google.generativeai as genai
-    from app.services.gemini_config_service import get_active_config_sync as gcfg_sync
-    cfg = gcfg_sync()
-
-    try:
-        function_declarations = _convert_tools_for_gemini(tools)
-        gemini_tools = [genai.protos.Tool(function_declarations=function_declarations)]
-
-        gmodel = genai.GenerativeModel(
-            model_name=cfg["model"],
-            system_instruction=system_prompt,
-            tools=gemini_tools,
-        )
-
-        h = []
-        for m in history:
-            h.append({
-                "role":  "user" if m["role"] == "user" else "model",
-                "parts": [m["content"]],
-            })
-        while h and h[0]["role"] != "user":
-            h.pop(0)
-
-        chat     = gmodel.start_chat(history=h)
-        response = await chat.send_message_async(message)
-
-        usage    = getattr(response, "usage_metadata", None)
-        input_tokens  = getattr(usage, "prompt_token_count",     0) or 0
-        output_tokens = getattr(usage, "candidates_token_count", 0) or 0
-
-        for part in response.parts:
-            fc = getattr(part, "function_call", None)
-            if fc and getattr(fc, "name", None):
-                return {
-                    "type":      "tool_call",
-                    "tool_name": fc.name,
-                    "tool_args": dict(fc.args),
-                    "raw_response":  response,
-                    "input_tokens":  input_tokens,
-                    "output_tokens": output_tokens,
-                    "provider_state": {"provider": "gemini", "chat": chat},
-                }
-
-        return {
-            "type": "text",
-            "text": response.text.strip(),
-            "raw_response":  response,
-            "input_tokens":  input_tokens,
-            "output_tokens": output_tokens,
-            "provider_state": {"provider": "gemini"},
-        }
-
-    except Exception as e:
-        logger.warning(f"Gemini tool call failed: {e}")
-        return {"type": "text", "text": "I'm having trouble right now. Please try again.", "input_tokens": 0, "output_tokens": 0, "provider_state": {"provider": "gemini"}}
-
-
 # ─────────────────────────────────────────────────────────────
-# Public unified tool-calling entry point
+# Public tool-calling entry point (Claude-only)
 # ─────────────────────────────────────────────────────────────
 
 async def call_ai_with_tools_async(
@@ -570,7 +415,7 @@ async def call_ai_with_tools_async(
     tools: list,
 ) -> dict:
     """
-    Route a function-calling request to the active provider (Claude or Gemini).
+    Run a function-calling request through Claude.
 
     Returns dict with keys:
       type          → "text" | "tool_call"
@@ -582,10 +427,7 @@ async def call_ai_with_tools_async(
       output_tokens → int
       provider_state → dict  (needed by send_tool_result_async)
     """
-    provider = get_active_provider_sync()
-    if provider == "claude":
-        return await _call_claude_with_tools_async(system_prompt, history, message, tools)
-    return await _call_gemini_with_tools_async(system_prompt, history, message, tools)
+    return await _call_claude_with_tools_async(system_prompt, history, message, tools)
 
 
 async def send_tool_result_async(
@@ -599,68 +441,42 @@ async def send_tool_result_async(
     tools: list = None,
 ) -> str:
     """
-    Send a tool result back to the AI and get the final natural-language response.
+    Send a tool result back to Claude and get the final natural-language response.
     Falls back to returning the summary directly if the round-trip fails.
     """
-    provider = (provider_state or {}).get("provider", get_active_provider_sync())
+    try:
+        import anthropic as _anthropic
+        from app.services.claude_config_service import get_active_config_sync
+        cfg = get_active_config_sync()
 
-    if provider == "claude":
-        try:
-            import anthropic as _anthropic
-            from app.services.claude_config_service import get_active_config_sync
-            cfg = get_active_config_sync()
+        messages = list(provider_state.get("messages", []))
+        messages.append({"role": "assistant", "content": first_response_raw.content})
+        messages.append({
+            "role": "user",
+            "content": [
+                {
+                    "type":        "tool_result",
+                    "tool_use_id": provider_state.get("tool_use_id", ""),
+                    "content":     tool_result_summary,
+                }
+            ],
+        })
 
-            messages = list(provider_state.get("messages", []))
-            messages.append({"role": "assistant", "content": first_response_raw.content})
-            messages.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type":        "tool_result",
-                        "tool_use_id": provider_state.get("tool_use_id", ""),
-                        "content":     tool_result_summary,
-                    }
-                ],
-            })
+        claude_tools = provider_state.get("claude_tools", [])
+        client   = _anthropic.AsyncAnthropic(api_key=cfg["api_key"])
+        response = await client.messages.create(
+            model=cfg["model"],
+            max_tokens=1024,
+            system=system_prompt,
+            messages=messages,
+            tools=claude_tools,
+        )
+        text = next(
+            (b.text for b in response.content if hasattr(b, "text")),
+            tool_result_summary,
+        )
+        return text.strip()
 
-            claude_tools = provider_state.get("claude_tools", [])
-            client   = _anthropic.AsyncAnthropic(api_key=cfg["api_key"])
-            response = await client.messages.create(
-                model=cfg["model"],
-                max_tokens=1024,
-                system=system_prompt,
-                messages=messages,
-                tools=claude_tools,
-            )
-            text = next(
-                (b.text for b in response.content if hasattr(b, "text")),
-                tool_result_summary,
-            )
-            return text.strip()
-
-        except Exception as e:
-            logger.warning(f"Claude tool result round-trip failed: {e}")
-            return tool_result_summary
-
-    else:  # gemini
-        try:
-            import google.generativeai as genai
-            chat = provider_state.get("chat")
-            if not chat:
-                return tool_result_summary
-
-            tool_response_content = genai.protos.Content(
-                parts=[genai.protos.Part(
-                    function_response=genai.protos.FunctionResponse(
-                        name=tool_name,
-                        response={"result": tool_result_summary},
-                    )
-                )],
-                role="user",
-            )
-            response = await chat.send_message_async(tool_response_content)
-            return response.text.strip()
-
-        except Exception as e:
-            logger.warning(f"Gemini tool result round-trip failed: {e}")
-            return tool_result_summary
+    except Exception as e:
+        logger.warning(f"Claude tool result round-trip failed: {e}")
+        return tool_result_summary

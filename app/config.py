@@ -33,23 +33,16 @@ class Settings(BaseSettings):
     frontend_base_url: str                          # required
     payment_success_url: str = ""                   # can be empty
 
-    # ── Gemini (AI features) ─────────────────────────────────────
-    gemini_api_key: str                             # required
-
-    # Model name – use a currently valid name (Feb 2026)
-    # Recommended options:
-    #   - gemini-1.5-flash-002     → stable, good price/performance
-    #   - gemini-1.5-flash-latest  → always points to newest 1.5-flash
-    #   - gemini-2.0-flash         → newer generation (faster, sometimes cheaper)
-    gemini_model: str = "gemini-2.5-flash"      # safe default/fallback
-
-    # Optional: control generation behavior globally
-    gemini_temperature_default: float = 0.2         # lower = more deterministic
-    gemini_max_tokens_default: int = 2048           # safe limit for flash models
-
-    # ── Claude / Anthropic (AI features) ─────────────────────────
+    # ── Claude / Anthropic (sole AI provider) ────────────────────
     claude_api_key: str = ""                        # set CLAUDE_API_KEY in .env
     claude_model: str = "claude-sonnet-4-6"         # safe default
+
+    # ── Google Generative AI (legacy — only used by openclaw CLI) ─
+    # Optional. The main API runtime no longer routes any traffic to Google.
+    # Kept here so openclaw's CLI scraper, which calls google.generativeai
+    # directly, can still run when the env var is provided.
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
 
     # ── Resume feature specifics ─────────────────────────────────
     resume_template_admins: str = ""   # comma-separated emails
@@ -78,8 +71,6 @@ class Settings(BaseSettings):
     openclaw_data_dir: str = str(Path.home() / "openclaw_data")
     openclaw_max_users: int = 100
     openclaw_gateway_token: str = "supersecret123"   # ← move to .env only!
-    gemini_temperature_default: float = 0.2
-    gemini_max_tokens_default: int = 4096
 
     telegram_bot_token:    str = ""
     telegram_bot_username: str = ""

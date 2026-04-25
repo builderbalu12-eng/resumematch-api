@@ -42,7 +42,7 @@ class JobCard(BaseModel):
     risk_flags:          List[str]      = Field(default_factory=list)
 
     class Config:
-        extra = "allow"   # allow extra fields from Gemini/scraper without breaking
+        extra = "allow"   # allow extra fields from Claude / scraper without breaking
 
 
 # ─────────────────────────────────────────────────────────────

@@ -13,11 +13,6 @@ from app.models.payment.coupon import CouponCreate
 from app.models.payment.plan import PlanCreate, PlanUpdate
 from app.services.mongo import mongo
 from app.config import settings
-from app.services.gemini_config_service import (
-    get_gemini_config,
-    save_gemini_config,
-    AVAILABLE_MODELS,
-)
 from app.services.claude_config_service import (
     get_claude_config,
     save_claude_config,
@@ -211,13 +206,6 @@ async def delete_coupon(
 
 # ── Resource Utilization ─────────────────────────────────────
 
-class GeminiConfigUpdate(BaseModel):
-    api_key: Optional[str] = None
-    model: Optional[str] = None
-    temperature: Optional[float] = None
-    max_tokens: Optional[int] = None
-
-
 class ClaudeConfigUpdate(BaseModel):
     api_key: Optional[str] = None
     model: Optional[str] = None
@@ -226,79 +214,9 @@ class ClaudeConfigUpdate(BaseModel):
 
 
 class ActiveProviderUpdate(BaseModel):
-    provider: str  # "gemini" | "claude"
-
-
-# ── Gemini model list (original route kept + new named route) ─
-
-@router.get("/resources/models")
-async def list_gemini_models(admin: str = Depends(require_admin)):
-    """Return the list of available Gemini models (legacy route, kept for compatibility)."""
-    return {"data": AVAILABLE_MODELS}
-
-
-@router.get("/resources/models/gemini")
-async def list_gemini_models_named(admin: str = Depends(require_admin)):
-    """Return the list of available Gemini models with free-tier limits."""
-    return {"data": AVAILABLE_MODELS}
-
-
-@router.get("/resources/gemini")
-async def get_gemini_resource(admin: str = Depends(require_admin)):
-    """Return current Gemini config + today's usage count from credits_log."""
-    cfg = await get_gemini_config()
-
-    # Count today's Gemini calls from credits_log (type=deduction)
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    today_count = await mongo.credits_log.count_documents({
-        "type": "deduction",
-        "created_at": {"$gte": today_start},
-    })
-
-    # 30-day daily usage
-    thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
-    pipeline = [
-        {"$match": {"type": "deduction", "created_at": {"$gte": thirty_days_ago}}},
-        {"$group": {
-            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}},
-            "count": {"$sum": 1},
-        }},
-        {"$sort": {"_id": 1}},
-    ]
-    history_cursor = mongo.credits_log.aggregate(pipeline)
-    history = [{"date": d["_id"], "count": d["count"]} async for d in history_cursor]
-
-    # Find RPD limit for the active model
-    model_info = next((m for m in AVAILABLE_MODELS if m["id"] == cfg["model"]), AVAILABLE_MODELS[0])
-
-    return {
-        "data": {
-            "api_key_masked": cfg["api_key"][:8] + "•" * 20 if cfg["api_key"] else "",
-            "api_key_full": cfg["api_key"],   # admin-only endpoint — OK to return
-            "model": cfg["model"],
-            "temperature": cfg["temperature"],
-            "max_tokens": cfg["max_tokens"],
-            "updated_at": cfg["updated_at"].isoformat() if cfg["updated_at"] else None,
-            "updated_by": cfg["updated_by"],
-            "today_usage": today_count,
-            "daily_limit": model_info["rpd"],
-            "rpm_limit": model_info["rpm"],
-            "usage_history": history,
-        }
-    }
-
-
-@router.patch("/resources/gemini")
-async def update_gemini_config(
-    body: GeminiConfigUpdate,
-    admin: str = Depends(require_admin),
-):
-    """Save new Gemini API key / model / settings. Takes effect immediately."""
-    update = body.model_dump(exclude_none=True)
-    if not update:
-        raise HTTPException(400, "No fields provided to update")
-    await save_gemini_config(update, admin_email=admin)
-    return {"success": True, "message": "Gemini config updated and applied immediately."}
+    # Kept as a no-op shim for backwards compatibility with older admin frontends.
+    # The system is Claude-only; any value other than "claude" is ignored upstream.
+    provider: str
 
 
 # ── Claude Resource ───────────────────────────────────────────
@@ -412,11 +330,11 @@ async def update_claude_config(
     return {"success": True, "message": "Claude config updated and applied immediately."}
 
 
-# ── Active AI Provider ────────────────────────────────────────
+# ── Active AI Provider (Claude-only — kept for back-compat) ──
 
 @router.get("/resources/active-provider")
 async def get_active_ai_provider(admin: str = Depends(require_admin)):
-    """Return which AI provider is currently active (gemini or claude)."""
+    """Return the active AI provider. System is Claude-only; always returns 'claude'."""
     provider = await get_active_provider()
     return {"data": {"provider": provider}}
 
@@ -426,14 +344,12 @@ async def update_active_ai_provider(
     body: ActiveProviderUpdate,
     admin: str = Depends(require_admin),
 ):
-    """Switch the active AI provider. Takes effect immediately for all AI features."""
-    if body.provider not in ("gemini", "claude"):
-        raise HTTPException(400, "provider must be 'gemini' or 'claude'")
+    """No-op shim. System is Claude-only; this endpoint is retained for back-compat."""
     await set_active_provider(body.provider, admin_email=admin)
     return {
         "success":  True,
-        "provider": body.provider,
-        "message":  f"Switched to {body.provider}. All AI features now use {body.provider.capitalize()}.",
+        "provider": "claude",
+        "message":  "System is Claude-only; provider toggle is a no-op.",
     }
 
 

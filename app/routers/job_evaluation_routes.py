@@ -76,7 +76,7 @@ def _ghost_job_signals(
     salary: Optional[str],
 ) -> dict:
     """
-    Pre-compute observable signals before the AI call so Gemini can
+    Pre-compute observable signals before the AI call so Claude can
     reason about Posting Legitimacy with concrete data rather than guessing.
     """
     signals: dict = {}

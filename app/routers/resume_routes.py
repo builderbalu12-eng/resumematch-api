@@ -8,7 +8,7 @@ from app.models.resume.user_resume import UserResumeCreate, UserResumeOut
 from app.models.resume.schema import ResumeSchemaCreate, ResumeSchemaOut
 from app.services.incoming_resume_service import IncomingResumeService
 
-from app.controllers.gemini_resume_controller import (
+from app.controllers.resume_ai_controller import (
     process_analyze_resume,
     process_extract_resume,
     process_tailor_resume,
@@ -21,7 +21,7 @@ from app.controllers.gemini_resume_controller import (
     process_keyword_distribution,
 )
 
-from app.models.gemini.schemas import (
+from app.models.resume_ai.schemas import (
     AnalyzeResumeRequest, AnalyzeResumeResponse,
     ExtractResumeRequest, ExtractResumeResponse,
     TailorResumeRequest, TailorResumeResponse,
@@ -233,11 +233,11 @@ async def generate_resume(
 
 
 
-# --------------------------------- GEMINI ROUTES ----------------------------------
+# --------------------------------- AI (CLAUDE) ROUTES ----------------------------------
 
 
 @router.post("/analyze-resume", response_model=AnalyzeResumeResponse)
-async def gemini_analyze_resume(
+async def ai_analyze_resume(
     request: AnalyzeResumeRequest,
     current_user: str = Depends(get_current_user)
 ):
@@ -249,7 +249,7 @@ async def gemini_analyze_resume(
 
 
 @router.post("/extract-resume", response_model=ExtractResumeResponse)
-async def gemini_extract_resume(
+async def ai_extract_resume(
     request: ExtractResumeRequest,
     current_user: str = Depends(get_current_user)
 ):
@@ -261,7 +261,7 @@ async def gemini_extract_resume(
 
 
 @router.post("/tailor-resume", response_model=TailorResumeResponse)
-async def gemini_tailor_resume(
+async def ai_tailor_resume(
     request: TailorResumeRequest,
     current_user: str = Depends(get_current_user)
 ):
@@ -273,7 +273,7 @@ async def gemini_tailor_resume(
 
 
 @router.post("/ats-score", response_model=AtsScoreResponse)
-async def gemini_ats_score(
+async def ai_ats_score(
     request: AtsScoreRequest,
     current_user: str = Depends(get_current_user)
 ):
@@ -285,7 +285,7 @@ async def gemini_ats_score(
 
 
 @router.post("/parse-job", response_model=ParseJobResponse)
-async def gemini_parse_job(
+async def ai_parse_job(
     request: ParseJobRequest,
     current_user: str = Depends(get_current_user)
 ):
@@ -297,7 +297,7 @@ async def gemini_parse_job(
 
 
 @router.post("/generate-cover-letter", response_model=GenerateCoverLetterResponse)
-async def gemini_generate_cover_letter(
+async def ai_generate_cover_letter(
     request: GenerateCoverLetterRequest,
     current_user: str = Depends(get_current_user)
 ):
@@ -309,7 +309,7 @@ async def gemini_generate_cover_letter(
 
 
 @router.post("/skills-roadmap", response_model=SkillsRoadmapResponse)
-async def gemini_skills_roadmap(
+async def ai_skills_roadmap(
     request: SkillsRoadmapRequest,
     current_user: str = Depends(get_current_user)
 ):
@@ -321,7 +321,7 @@ async def gemini_skills_roadmap(
 
 
 @router.post("/keyword-distribution", response_model=KeywordDistributionResponse)
-async def gemini_keyword_distribution(
+async def ai_keyword_distribution(
     request: KeywordDistributionRequest,
     current_user: str = Depends(get_current_user)
 ):
@@ -334,7 +334,7 @@ async def gemini_keyword_distribution(
 
 
 @router.post("/check-completeness", response_model=CheckCompletenessResponse)
-async def gemini_check_completeness(
+async def ai_check_completeness(
     request: CheckCompletenessRequest,
     current_user: str = Depends(get_current_user)
 ):
@@ -346,12 +346,12 @@ async def gemini_check_completeness(
 
 
 @router.post("/analyze-and-tailor", response_model=AnalyzeAndTailorResponse)
-async def gemini_analyze_and_tailor(
+async def ai_analyze_and_tailor(
     request: AnalyzeAndTailorRequest,
     current_user: str = Depends(get_current_user)
 ):
     """
-    Combined endpoint: extract job data + tailor resume + ATS score in one Gemini call.
+    Combined endpoint: extract job data + tailor resume + ATS score in one Claude call.
     Used by the Chrome extension for maximum speed and reliability.
     Credits used: 3
     """
@@ -365,7 +365,7 @@ async def get_incoming_resume(
 ):
     """
     Get the latest incoming resume extraction for the current user.
-    Returns the saved extracted_data (flexible JSON from Gemini).
+    Returns the saved extracted_data (flexible JSON from Claude).
     """
     data = await IncomingResumeService.get_latest(current_user)
     if not data:

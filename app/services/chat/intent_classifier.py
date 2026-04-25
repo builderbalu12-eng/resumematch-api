@@ -22,7 +22,7 @@ IntentType = Literal[
 
 async def classify_intent(message: str) -> IntentType:
     """
-    Classify user intent using the active AI provider (Gemini or Claude).
+    Classify user intent using Claude.
     """
     if not message or not isinstance(message, str):
         return "out_of_scope"

@@ -1,6 +1,6 @@
-# app/controllers/gemini_resume_controller.py
+# app/controllers/resume_ai_controller.py
 """
-Controller layer for Gemini-powered resume & job endpoints.
+Controller layer for Claude-powered resume & job endpoints.
 Credits are deducted BEFORE processing and refunded if processing fails.
 Costs are DB-driven via credits_on_features collection.
 """
@@ -21,7 +21,7 @@ from app.services.resume_processor import (
     analyze_and_tailor,
     keyword_distribution,
 )
-from app.models.gemini.schemas import (
+from app.models.resume_ai.schemas import (
     AnalyzeResumeRequest, AnalyzeResumeResponse,
     ExtractResumeRequest, ExtractResumeResponse,
     TailorResumeRequest, TailorResumeResponse,
@@ -73,7 +73,7 @@ async def process_extract_resume(
 
         if "error" in result:
             await CreditsService.refund_credits(current_user, cost, "Resume extraction returned error")
-            raise ValueError(result.get("message", "Gemini processing failed"))
+            raise ValueError(result.get("message", "AI processing failed"))
 
         await IncomingResumeService.save_or_update(
             user_id=current_user,
@@ -122,7 +122,7 @@ async def process_tailor_resume(
         result = tailor_resume(request.resume, request.jobDescription)
         await CreditsService.commit_ai_tokens()
         if "error" in result:
-            await CreditsService.refund_credits(current_user, cost, "Tailor resume: Gemini error")
+            await CreditsService.refund_credits(current_user, cost, "Tailor resume: AI error")
             raise HTTPException(503, "AI service temporarily unavailable. Credits refunded.")
         result["creditsUsed"] = cost
         return TailorResumeResponse(**result)
@@ -147,7 +147,7 @@ async def process_ats_score(
         result = calculate_ats_score(request.resume, request.jobDescription)
         await CreditsService.commit_ai_tokens()
         if "error" in result:
-            await CreditsService.refund_credits(current_user, cost, "ATS score: Gemini error")
+            await CreditsService.refund_credits(current_user, cost, "ATS score: AI error")
             raise HTTPException(503, "AI service temporarily unavailable. Credits refunded.")
         result["creditsUsed"] = cost
         return AtsScoreResponse(**result)
@@ -212,7 +212,7 @@ async def process_analyze_and_tailor(
         result = analyze_and_tailor(request.pageText, request.resume, request.configuredSections)
         await CreditsService.commit_ai_tokens()
         if "error" in result:
-            await CreditsService.refund_credits(current_user, cost, "Analyze and tailor: Gemini error")
+            await CreditsService.refund_credits(current_user, cost, "Analyze and tailor: AI error")
             raise HTTPException(503, "AI service temporarily unavailable. Credits refunded.")
         result["creditsUsed"] = cost
         return AnalyzeAndTailorResponse(**result)

@@ -1,7 +1,6 @@
 """
 DB-backed Claude configuration with a 60-second in-memory cache.
 
-Mirrors gemini_config_service.py exactly — same pattern, same startup/admin flow.
 Allows the admin UI to update the active API key / model at runtime
 without restarting the server. Falls back to .env values if no DB override is set.
 """
@@ -113,8 +112,7 @@ async def init_claude_config() -> None:
     """
     Called once at startup (main.py → startup_event).
     Loads config from DB so all features use the correct key/model
-    from the very first request. No genai.configure() needed —
-    Claude uses per-call client instantiation.
+    from the very first request. Claude uses per-call client instantiation.
     """
     global _active_config
     cfg = await get_claude_config()

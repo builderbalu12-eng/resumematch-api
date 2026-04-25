@@ -37,7 +37,7 @@ def _extract_user_id(current_user: Any) -> str:
 @router.post(
     "/recommend",
     response_model=JobRecommendResponse,
-    summary="Scrape & rank jobs for a given resume_id using Gemini",
+    summary="Scrape & rank jobs for a given resume_id using Claude",
 )
 async def recommend_jobs(
     payload: JobRecommendRequest,
@@ -48,7 +48,7 @@ async def recommend_jobs(
     1. Validate user owns the resume (resume_id + user_id)
     2. Extract resume text from incoming_resumes
     3. Scrape LinkedIn, Indeed, Google, Naukri
-    4. Gemini ranks + summarizes each job
+    4. Claude ranks + summarizes each job
     5. Save results to job_lists (metadata) + listed_jobs (cards)
     6. Return ranked job cards
     """

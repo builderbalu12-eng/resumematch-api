@@ -214,7 +214,7 @@ class ResumeGenerator:
         focus_quantifiable: bool = True
     ) -> Dict:
         """
-        Use Gemini to improve/enrich resume content:
+        Use Claude to improve/enrich resume content:
         - Make bullets more impactful
         - Add quantifiable achievements when possible
         - Tailor to job description if provided
@@ -270,7 +270,7 @@ class ResumeGenerator:
         - Limit bullets to avoid dilution
         Returns modified copy of resume_data
         """
-        # First extract keywords via Gemini (or use previous parse-job endpoint)
+        # First extract keywords via Claude (or use previous parse-job endpoint)
         parse_prompt = f"""Extract important keywords, skills, technologies from this job description.
     Return ONLY JSON: {{"keywords": list[str], "must_have_skills": list[str]}}
 
@@ -289,7 +289,7 @@ class ResumeGenerator:
                         item["bullets"] = [
                             bullet for bullet in item["bullets"][:max_bullets_per_role]
                             # Simple heuristic: inject keywords if missing (careful!)
-                        ]  # → here you can call Gemini per section if needed
+                        ]  # → here you can call Claude per section if needed
 
         # Or full re-generation similar to enhance_resume_content but stricter
         resume_data["content"] = await ResumeGenerator.enhance_resume_content(

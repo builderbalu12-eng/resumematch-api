@@ -1,6 +1,6 @@
-# app/models/gemini/schemas.py
+# app/models/resume_ai/schemas.py
 """
-Pydantic models specifically for the Gemini-powered resume/job endpoints.
+Pydantic models for the Claude-powered resume/job endpoints.
 These are SEPARATE from the resume template/schema models.
 """
 
@@ -10,7 +10,7 @@ from typing import List, Dict, Optional, Literal, Any
 
 
 # ── Common base for all requests ─────────────────────────────────────────────
-class GeminiRequestBase(BaseModel):
+class AIRequestBase(BaseModel):
     userCredits: int = Field(
         ...,
         ge=0,
@@ -20,35 +20,35 @@ class GeminiRequestBase(BaseModel):
 
 # ── Request Models ────────────────────────────────────────────────────────────
 
-class AnalyzeResumeRequest(GeminiRequestBase):
+class AnalyzeResumeRequest(AIRequestBase):
     resume: str = Field(..., min_length=100, description="Full resume text")
     jobDescription: str = Field(..., min_length=100, description="Full job description text")
 
 
-class ExtractResumeRequest(GeminiRequestBase):
+class ExtractResumeRequest(AIRequestBase):
     documentText: str = Field(..., min_length=100, description="Raw text extracted from uploaded document/PDF/image")
 
 
-class TailorResumeRequest(GeminiRequestBase):
+class TailorResumeRequest(AIRequestBase):
     resume: str = Field(..., min_length=100, description="Original resume text")
     jobDescription: str = Field(..., min_length=100, description="Target job description")
 
 
-class AtsScoreRequest(GeminiRequestBase):
+class AtsScoreRequest(AIRequestBase):
     resume: str = Field(..., min_length=100, description="Resume text")
     jobDescription: str = Field(..., min_length=100, description="Job description text")
 
 
-class ParseJobRequest(GeminiRequestBase):
+class ParseJobRequest(AIRequestBase):
     jobDescription: str = Field(..., min_length=100, description="Full job posting text")
 
 
-class GenerateCoverLetterRequest(GeminiRequestBase):
+class GenerateCoverLetterRequest(AIRequestBase):
     resume: str = Field(..., min_length=100, description="Resume text")
     jobDescription: str = Field(..., min_length=100, description="Job description text")
 
 
-class CheckCompletenessRequest(GeminiRequestBase):
+class CheckCompletenessRequest(AIRequestBase):
     resume: str = Field(..., min_length=100, description="Resume text")
 
 
@@ -139,7 +139,7 @@ class GenerateCoverLetterResponse(BaseModel):
     creditsUsed: Literal[3] = 3   # ← changed
 
 
-class SkillsRoadmapRequest(GeminiRequestBase):
+class SkillsRoadmapRequest(AIRequestBase):
     resume: str = Field(..., min_length=100, description="Resume text")
     jobDescription: str = Field(..., min_length=100, description="Job description text")
 
@@ -168,7 +168,7 @@ class SkillsRoadmapResponse(BaseModel):
     creditsUsed: Literal[1] = 1
 
 
-class KeywordDistributionRequest(GeminiRequestBase):
+class KeywordDistributionRequest(AIRequestBase):
     resume: str = Field(..., min_length=100, description="Resume text or JSON")
     jobDescription: str = Field(..., min_length=100, description="Job description text")
 
@@ -196,7 +196,7 @@ class CheckCompletenessResponse(BaseModel):
 
 
 # Optional: wrapper for all responses (if you want consistent shape)
-class GeminiApiResponse(BaseModel):
+class AIApiResponse(BaseModel):
     data: Dict  # will contain the specific response model
     creditsUsed: int
     message: str = "Success"
@@ -204,7 +204,7 @@ class GeminiApiResponse(BaseModel):
 
 # ── Combined analyze + tailor (extension endpoint) ───────────────────────────
 
-class AnalyzeAndTailorRequest(GeminiRequestBase):
+class AnalyzeAndTailorRequest(AIRequestBase):
     pageText: str = Field(..., min_length=50, description="Cleaned page text (HTML already stripped)")
     resume: Dict = Field(..., description="ResumeData JSON object")
     configuredSections: List[str] = Field(default_factory=list, description="Custom section names to generate")

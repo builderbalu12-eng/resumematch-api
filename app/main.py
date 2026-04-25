@@ -98,9 +98,6 @@ _scheduler = AsyncIOScheduler()
 async def startup_event():
     await mongo.connect()
 
-    from app.services.gemini_config_service import init_gemini_config
-    await init_gemini_config()
-
     from app.services.claude_config_service import init_claude_config
     await init_claude_config()
 

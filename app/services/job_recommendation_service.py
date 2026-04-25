@@ -16,7 +16,7 @@ from app.config import settings
 from app.services.mongo import mongo
 
 MAX_DESC_CHARS     = 800
-MAX_JOBS_TO_GEMINI = 20
+MAX_JOBS_TO_AI = 20
 
 NAUKRI_HEADERS = {
     "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -581,7 +581,7 @@ class JobRecommendationService:
                 "jobs":           [],
             }
 
-        # 4. Pre-filter: deduplicate by URL + cap to MAX_JOBS_TO_GEMINI
+        # 4. Pre-filter: deduplicate by URL + cap to MAX_JOBS_TO_AI
         seen_urls = set()
         filtered  = []
         for j in all_jobs:
@@ -590,10 +590,10 @@ class JobRecommendationService:
                 seen_urls.add(url)
                 filtered.append(j)
 
-        filtered = filtered[:MAX_JOBS_TO_GEMINI]
-        print(f"[JobRecommend] Sending {len(filtered)} jobs to Gemini (capped from {total_scraped})")
+        filtered = filtered[:MAX_JOBS_TO_AI]
+        print(f"[JobRecommend] Sending {len(filtered)} jobs to Claude (capped from {total_scraped})")
 
-        # 5. Rank + summarize with Gemini
+        # 5. Rank + summarize with Claude
         top_jobs = await loop.run_in_executor(
             None,
             partial(_rank_and_summarize_sync, resume_text, filtered, payload.top_n)

@@ -1,5 +1,5 @@
 """
-All Gemini-powered resume/job processing logic.
+Claude-powered resume / job processing logic.
 SEPARATE from resume_generator.py (PDF only).
 """
 
@@ -10,23 +10,19 @@ import io
 from typing import Dict, Optional
 import re
 
-import google.generativeai as genai
 import pdfplumber
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Startup defaults — overridden immediately by init_gemini_config() in main.py
-genai.configure(api_key=settings.gemini_api_key)
-MODEL = settings.gemini_model
 
-# Lazy import to avoid circular imports — used by call_ai() in ai_provider_service
+# Lazy import to avoid circular imports — used by call_ai() in ai_provider_service.
+# Every prompt routes through call_ai → call_claude.
 def _call_ai(prompt, temperature=1.0, max_tokens=8192, model=None):
     from app.services.ai_provider_service import call_ai
     return call_ai(prompt, temperature=temperature, max_tokens=max_tokens, model=model)
 
-logger.info(f"Gemini model loaded: {MODEL}")
 
 # Safety limits
 MAX_INPUT_CHARS = 100_000        # ~100k chars is ample for any resume/JD
@@ -47,78 +43,6 @@ def clean_json_response(text: str) -> str:
     if text.startswith("```"):
         text = text[3:].strip()
     return text
-
-
-# ─────────────────────────────────────────────────────────────
-# Safe Gemini Caller (Prompts untouched)
-# ─────────────────────────────────────────────────────────────
-
-def call_gemini(
-    prompt: str,
-    temperature: float = 1.0,
-    max_tokens: int = 8192,
-    model: Optional[str] = None,
-) -> Dict:
-
-    if len(prompt) > MAX_INPUT_CHARS:
-        logger.warning("Prompt truncated due to size limit")
-        prompt = prompt[:MAX_INPUT_CHARS]
-
-    # Use the sync active config populated at startup (and refreshed on each admin save).
-    try:
-        from app.services.gemini_config_service import get_active_config_sync
-        cfg = get_active_config_sync()
-        genai.configure(api_key=cfg["api_key"])
-        active_model = model or cfg["model"]
-    except Exception as e:
-        logger.warning(f"Could not load live Gemini config, using .env defaults: {e}")
-        active_model = model or MODEL
-
-    for attempt in range(2):  # 1 retry for JSON parse failures only
-        try:
-            gen_model = genai.GenerativeModel(active_model)
-
-            response = gen_model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=temperature,
-                    max_output_tokens=min(max_tokens, DEFAULT_MAX_OUTPUT_TOKENS),
-                    response_mime_type="application/json",
-                ),
-            )
-
-            if not response or not response.text:
-                logger.error("Gemini returned empty response")
-                continue
-
-            raw_text = response.text.strip()
-            cleaned = clean_json_response(raw_text)
-
-            try:
-                parsed = json.loads(cleaned)
-                return parsed
-
-            except json.JSONDecodeError as e:
-                logger.warning(f"JSON parse failed (attempt {attempt+1})")
-                if attempt == 1:
-                    preview = cleaned[:2000] if cleaned else "N/A"
-                    return {
-                        "error": "invalid_json",
-                        "message": "Gemini output was not valid JSON (likely truncated or malformed)",
-                        "parse_error": str(e),
-                        "raw_length": len(cleaned) if cleaned else 0,
-                        "raw_preview": preview,
-                    }
-
-        except Exception as e:
-            err_msg = str(e)
-            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
-                logger.error(f"Rate limit hit on model {active_model}. Switch to a higher-RPM model in admin panel.")
-                return {"error": "gemini_api_error", "message": err_msg}
-            logger.exception("Gemini API call failed")
-            return {"error": "gemini_api_error", "message": err_msg}
-
-    return {"error": "unknown_error", "message": "Unexpected Gemini failure"}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -180,9 +104,9 @@ def extract_resume_from_text(document_text: str) -> Dict:
         logger.warning("Resume text truncated due to size limit")
         document_text = document_text[:MAX_INPUT_CHARS]
 
-    # Log what we're actually sending to Gemini
+    # Log what we're actually sending to Claude
     logger.info(f"Input type: {'base64 PDF → extracted text' if is_base64_pdf else 'plain text'}")
-    logger.info(f"Text length sent to Gemini: {len(document_text)} chars")
+    logger.info(f"Text length sent to Claude: {len(document_text)} chars")
     logger.info(f"First 400 chars:\n{document_text[:400]}...")
 
     # Step 2: Send clean text to Claude (Opus) for high-fidelity structured extraction.
@@ -608,7 +532,7 @@ Job Description:
 
 def analyze_and_tailor(page_text: str, resume_json: dict, configured_sections: list) -> dict:
     """
-    Single combined Gemini call: extract job data + tailor resume + ATS score.
+    Single combined Claude call: extract job data + tailor resume + ATS score.
     Mirrors the main branch's analyzeJobAndTailorResume single-prompt approach.
     Optional second call for custom sections.
     """
