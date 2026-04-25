@@ -73,6 +73,10 @@ class ExtractResumeResponse(BaseModel):
     education: List[Dict] = Field(default_factory=list)
     projects: List[Dict] = Field(default_factory=list)
     certifications: List[str] = Field(default_factory=list)
+    achievements: List[str] = Field(default_factory=list)
+    publications: List[str] = Field(default_factory=list)
+    hobbies: List[str] = Field(default_factory=list)
+    customSections: Dict[str, str] = Field(default_factory=dict)
     creditsUsed: Literal[2] = 2   # ← changed
 
 

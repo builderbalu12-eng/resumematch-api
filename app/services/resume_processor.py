@@ -185,12 +185,15 @@ def extract_resume_from_text(document_text: str) -> Dict:
     logger.info(f"Text length sent to Gemini: {len(document_text)} chars")
     logger.info(f"First 400 chars:\n{document_text[:400]}...")
 
-    # Step 2: Now send clean text to Gemini
+    # Step 2: Send clean text to Claude (Opus) for high-fidelity structured extraction.
+    # Extraction quality matters: any section dropped here propagates to the tailor
+    # output as a missing section. So we ask for every section the user might have
+    # and use the strongest model + zero temperature.
     prompt = f"""You are a strict resume parser. Extract ONLY information LITERALLY present in the text below.
-DO NOT invent, hallucinate, assume or add any information. But just Clean and normalize the following text. Fix missing spaces. Do not change meaning.
-If a field is missing → null or empty array.
+DO NOT invent, hallucinate, assume, or add information that is not in the text. Clean and normalize the text — fix missing spaces and obvious OCR artifacts — but never change meaning.
+If a field is missing in the source → return null (for strings) or [] (for arrays) or {{}} (for objects).
 
-Return ONLY this JSON — nothing else:
+Return ONLY this JSON — no markdown fences, no commentary:
 
 {{
   "contact": {{
@@ -206,15 +209,24 @@ Return ONLY this JSON — nothing else:
   "skills": array of strings,
   "experience": array of objects with keys: title, company, location, startDate, endDate, isCurrentlyWorking (bool), description (array of strings),
   "education": array of objects with keys: institution, degree, field, graduationDate, gpa (string or null), achievements (array of strings),
-  "projects": array of objects with keys: title, description, technologies (array), link, date,
-  "certifications": array of strings
+  "projects": array of objects with keys: title, description, technologies (array of strings), link, date,
+  "certifications": array of strings,
+  "achievements": array of strings (top-level Achievements / Awards / Honors / Recognition section, NOT per-job bullets),
+  "publications": array of strings (papers, articles, talks — include venue/journal where given),
+  "hobbies": array of strings (interests, languages, volunteer activities short list),
+  "customSections": object mapping any extra section header found in the resume (e.g. "Volunteering", "Languages", "Patents") to its body text — anything that doesn't fit the standard sections above
 }}
+
+Notes:
+- "achievements" at the top level captures resume-wide awards (e.g. "Won Smart India Hackathon 2022"), separate from per-experience bullet metrics.
+- "publications" captures research papers, book chapters, conference talks. Format each as a single string with title and venue.
+- "customSections" is for headers you cannot map: e.g. "Patents", "Public Speaking", "Open Source", "Volunteering". Skip empty ones.
 
 Raw resume text:
 {document_text}
 """
 
-    return _call_ai(prompt, temperature=0.0, max_tokens=8192)
+    return _call_ai(prompt, temperature=0.0, max_tokens=8192, model="claude-opus-4-7")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -246,6 +258,28 @@ Job Description:
 
 
 def tailor_resume(resume: str, job_description: str) -> Dict:
+    # B2 — Defensive guard: refuse to tailor if the input resume is empty/stub.
+    # The frontend now always extracts pasted text via /api/extract-resume before
+    # calling this endpoint, so a payload with no name + no experience + no skills
+    # should never happen. If it does (older client, broken integration), bail
+    # early instead of hallucinating from the JD.
+    try:
+        parsed_resume = json.loads(resume) if isinstance(resume, str) and resume.strip().startswith("{") else None
+    except Exception:
+        parsed_resume = None
+    if isinstance(parsed_resume, dict):
+        contact = parsed_resume.get("contact") or {}
+        has_name = bool(str(contact.get("name", "")).strip()) and str(contact.get("name", "")).strip().lower() != "candidate"
+        has_exp = bool(parsed_resume.get("experience"))
+        has_skills = bool(parsed_resume.get("skills"))
+        has_projects = bool(parsed_resume.get("projects"))
+        has_edu = bool(parsed_resume.get("education"))
+        if not (has_name or has_exp or has_skills or has_projects or has_edu):
+            return {
+                "error": "empty_resume",
+                "message": "Resume payload is empty — extract structured data from the user's text first before calling tailor.",
+            }
+
     prompt = f"""You are an expert ATS optimization specialist and professional resume writer.
 Your goal is to tailor this resume for MAXIMUM ATS compatibility against the given job description.
 
@@ -254,16 +288,22 @@ Your goal is to tailor this resume for MAXIMUM ATS compatibility against the giv
 2. **Section presence is faithful.** If the input resume has no Projects section, return `"projects": []`. If it has no Education, return `"education": []`. Do not fabricate sections to fill the JSON.
 3. **Each section is enhanced individually** for ATS keyword density. Rewrite within a section, never across sections.
 4. **No fabrication.** Keep all original facts — do not invent experience, employers, credentials, projects, or metrics.
+5. **NEVER copy text from the Job Description into the resume output.** The JD is for keyword targeting only — it tells you which terms to weave into the user's existing content. It is NOT source material to fill missing sections. Specifically:
+   - `education` MUST come from the user's actual education entries. If the JD says "B.E / B.Tech / Diploma / Master Degree, Instrumentation / Electronics / Computer Science / Information Science / MCA" and the user's real education is "BTech in Computer Science from Jawaharlal Nehru University", you return the USER'S entry, never the JD's qualification list.
+   - `experience` MUST come from the user's actual jobs. If the user has zero experience entries, return `"experience": []` — do not synthesize a fake job from the JD's responsibilities.
+   - `contact.name`, `contact.email`, `contact.phone`, `contact.location` MUST come from the user's resume. Never replace them with placeholders like "Candidate" or "John Doe".
+   - Same rule for `projects`, `publications`, `achievements`, `certifications`, `hobbies`, `customSections`: source data is the USER's resume, not the JD.
 
 ## Step 1 — Extract ALL keywords from the job description
 Identify every required skill, tool, technology, certification, and key phrase. Note exact terminology (e.g. "cross-functional collaboration", "CI/CD pipelines", "agile methodology") — ATS matches exact strings.
 
 ## Step 2 — Rewrite each section (only sections the user actually has)
-- **summary**: 2–3 sentence professional summary emphasizing JD-relevant experience.
-- **skills**: reorder by descending JD relevance; keep all originals.
-- **experience**: rewrite bullets with JD keywords + exact JD phrasing; quantify only with numbers already in the original.
+- **contact**: pass through verbatim from the user's resume — name, email, phone, location, website, linkedin, github. Never modify.
+- **summary**: 2–3 sentence professional summary emphasizing JD-relevant experience the user actually has. Do not invent skills.
+- **skills**: reorder by descending JD relevance; keep all originals; you may add JD-priority skills only if the user demonstrably has them in their experience or projects.
+- **experience**: rewrite bullets with JD keywords + exact JD phrasing; quantify only with numbers already in the original. Keep the original `title`, `company`, `startDate`, `endDate`, `location` exactly.
 - **projects**: rewrite project descriptions to emphasize technologies/outcomes that match the JD. Each project keeps its title and any technologies the user listed.
-- **education**: keep as-is unless the JD specifically calls for credentials the user has — then surface them.
+- **education**: pass through the user's real education entries. Optionally surface a credential the user has if the JD mentions it.
 - **certifications / achievements / publications / hobbies**: keep verbatim or lightly rephrase to add JD-relevant phrasing where honest.
 - **customSections**: a free-form `Record<string, string>` map (e.g. {{"Volunteering": "...", "Languages": "..."}}). Preserve every key the user provided. Enhance the value text the same way as other sections.
 
@@ -275,55 +315,90 @@ For each section the user has, compute a 0–100 match score = how strongly that
 - `originalAtsScore`: 0–100 estimated score for the ORIGINAL resume (before any rewrite).
 - `keywordsAdded`: JD keywords newly surfaced by the rewrite (max 8).
 - `keywordsPresent`: JD keywords already present in the original resume (max 8).
-- `optimizationNotes`: 3–5 bullets describing the most impactful changes.
+- `optimizationNotes`: 3–5 bullets describing the most impactful changes, each naming the section it touched.
 
-Return ONLY valid JSON. Use EXACT original job titles, company names, project titles so they can be matched:
+## Output JSON — exact schema with realistic example values
+Return ONLY valid JSON, no commentary, no markdown fences. Use EXACT original job titles, company names, project titles from the user's resume so they can be matched. Below is an example of what good output looks like — your output structure must match, but with the USER's real data:
+
 {{
-  "summary": "...",
-  "skills": ["...", "..."],
+  "contact": {{
+    "name": "Jane Doe",
+    "email": "jane.doe@example.com",
+    "phone": "+1-555-0100",
+    "location": "Seattle, WA",
+    "linkedin": "linkedin.com/in/janedoe"
+  }},
+  "summary": "Full-stack engineer with 4 years building React/Node.js platforms; led migration to TypeScript and shipped CI/CD pipelines processing 10M events/day.",
+  "skills": ["TypeScript", "React", "Node.js", "PostgreSQL", "Docker", "GitHub Actions"],
   "experience": [
     {{
-      "title": "EXACT original job title",
-      "company": "EXACT original company",
-      "description": ["bullet 1", "bullet 2", "..."]
+      "title": "Software Engineer II",
+      "company": "Acme Corp",
+      "location": "Remote",
+      "startDate": "Jun 2022",
+      "endDate": "Present",
+      "isCurrentlyWorking": true,
+      "description": [
+        "Architected event-driven microservices in Node.js processing 10M+ events/day with 99.95% uptime.",
+        "Migrated 80k LOC from JavaScript to TypeScript, reducing production type errors by 73%."
+      ]
     }}
   ],
   "projects": [
     {{
-      "title": "EXACT original project title",
-      "description": "rewritten 2-3 sentence description"
+      "title": "OpenScheduler",
+      "description": "Open-source CRDT-based scheduling engine in TypeScript; 1.2k GitHub stars; used by 3 production teams.",
+      "technologies": ["TypeScript", "WebSockets", "PostgreSQL"],
+      "link": "github.com/janedoe/openscheduler"
     }}
   ],
   "education": [
-    {{ "degree": "...", "field": "...", "institution": "...", "graduationDate": "..." }}
+    {{
+      "institution": "University of Washington",
+      "degree": "B.S.",
+      "field": "Computer Science",
+      "graduationDate": "Jun 2021",
+      "gpa": "3.8"
+    }}
   ],
-  "certifications": ["...", "..."],
-  "achievements": ["...", "..."],
-  "publications": ["...", "..."],
-  "hobbies": ["...", "..."],
-  "customSections": {{"Section Name": "section body text"}},
-  "jobTitle": "actual job title extracted from the JD",
-  "company": "actual company extracted from the JD",
-  "optimizationNotes": ["...", "..."],
-  "keywordsAdded": ["...", "..."],
-  "keywordsPresent": ["...", "..."],
+  "certifications": ["AWS Certified Solutions Architect — Associate (2023)"],
+  "achievements": ["Speaker, ReactConf 2024 — \\"Scaling CRDTs in production\\""],
+  "publications": [],
+  "hobbies": [],
+  "customSections": {{}},
+  "jobTitle": "Senior Frontend Engineer",
+  "company": "TargetCo",
+  "optimizationNotes": [
+    "Summary: surfaced 'event-driven' and 'TypeScript migration' to mirror JD keywords.",
+    "Skills: moved 'Docker' and 'GitHub Actions' to the front to match JD CI/CD focus.",
+    "Experience: rewrote bullets to include 'microservices' and 'production' verbatim from the JD."
+  ],
+  "keywordsAdded": ["microservices", "event-driven", "CI/CD"],
+  "keywordsPresent": ["TypeScript", "React", "Node.js", "PostgreSQL"],
   "sectionScores": [
-    {{"section": "Skills",       "score": 0, "jdKeywordsFound": 0, "jdKeywordsTotal": 0}},
-    {{"section": "Experience",   "score": 0, "jdKeywordsFound": 0, "jdKeywordsTotal": 0}}
+    {{"section": "Summary",     "score": 78, "jdKeywordsFound": 5, "jdKeywordsTotal": 18}},
+    {{"section": "Skills",      "score": 89, "jdKeywordsFound": 14, "jdKeywordsTotal": 18}},
+    {{"section": "Experience",  "score": 72, "jdKeywordsFound": 11, "jdKeywordsTotal": 18}},
+    {{"section": "Projects",    "score": 55, "jdKeywordsFound": 7, "jdKeywordsTotal": 18}},
+    {{"section": "Education",   "score": 33, "jdKeywordsFound": 2, "jdKeywordsTotal": 18}}
   ],
-  "estimatedATSScore": 0,
-  "originalAtsScore": 0
+  "estimatedATSScore": 84,
+  "originalAtsScore": 56
 }}
 
-Reminder: only include sections the user actually has. Empty arrays / empty strings / empty objects for missing ones.
+Reminder: only include sections the user actually has. Empty arrays / empty strings / empty objects for missing ones. Pass `contact` through verbatim from the user's input resume.
 
-Original Resume:
+Original Resume (the source of truth — every field below comes from this):
 {resume}
 
-Job Description:
+Job Description (used ONLY for keyword targeting — never copy text from here into the resume):
 {job_description}
 """
-    result = _call_ai(prompt, temperature=0.0)
+    # B3 — strongest model + max tokens + zero temperature for accuracy.
+    # Per user guidance: "use claude best for best resume optimisation, don't
+    # hesitate to use Claude costs". Opus is ~5x Sonnet pricing but the user
+    # explicitly approved this trade-off for resume tailoring quality.
+    result = _call_ai(prompt, temperature=0.0, max_tokens=8192, model="claude-opus-4-7")
 
     # Cross-validate the overall ATS score by rebuilding plain text and re-scoring objectively
     try:
