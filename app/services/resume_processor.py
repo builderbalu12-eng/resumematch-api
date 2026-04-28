@@ -239,7 +239,7 @@ For each section the user has, compute a 0–100 match score = how strongly that
 - `originalAtsScore`: 0–100 estimated score for the ORIGINAL resume (before any rewrite).
 - `keywordsAdded`: JD keywords newly surfaced by the rewrite (max 8).
 - `keywordsPresent`: JD keywords already present in the original resume (max 8).
-- `optimizationNotes`: 3–5 bullets describing the most impactful changes, each naming the section it touched.
+- `optimizationNotes`: 3–5 structured objects, one per major change. Each has `"section"` (which section was changed), `"note"` (what changed and why), `"before"` (a short excerpt of the original text), `"after"` (the rewritten version). This powers a before/after comparison UI for the user.
 
 ## Output JSON — exact schema with realistic example values
 Return ONLY valid JSON, no commentary, no markdown fences. Use EXACT original job titles, company names, project titles from the user's resume so they can be matched. Below is an example of what good output looks like — your output structure must match, but with the USER's real data:
@@ -293,9 +293,24 @@ Return ONLY valid JSON, no commentary, no markdown fences. Use EXACT original jo
   "jobTitle": "Senior Frontend Engineer",
   "company": "TargetCo",
   "optimizationNotes": [
-    "Summary: surfaced 'event-driven' and 'TypeScript migration' to mirror JD keywords.",
-    "Skills: moved 'Docker' and 'GitHub Actions' to the front to match JD CI/CD focus.",
-    "Experience: rewrote bullets to include 'microservices' and 'production' verbatim from the JD."
+    {{
+      "section": "Summary",
+      "note": "Surfaced 'event-driven' and 'TypeScript migration' to mirror JD keywords.",
+      "before": "Experienced engineer with full-stack background.",
+      "after": "Full-stack engineer with 4 years building event-driven systems; led TypeScript migration processing 10M events/day."
+    }},
+    {{
+      "section": "Skills",
+      "note": "Moved 'Docker' and 'GitHub Actions' to the front to match JD CI/CD focus.",
+      "before": "TypeScript, React, Node.js, Docker, GitHub Actions",
+      "after": "Docker, GitHub Actions, TypeScript, React, Node.js"
+    }},
+    {{
+      "section": "Experience",
+      "note": "Rewrote bullets to include 'microservices' and 'production' verbatim from the JD.",
+      "before": "Built backend services for internal teams.",
+      "after": "Architected event-driven microservices in Node.js processing 10M+ events/day with 99.95% uptime."
+    }}
   ],
   "keywordsAdded": ["microservices", "event-driven", "CI/CD"],
   "keywordsPresent": ["TypeScript", "React", "Node.js", "PostgreSQL"],
