@@ -34,3 +34,26 @@ class IncomingResumeService:
             {"user_id": user_id},
             sort=[("updated_at", -1)]
         )
+
+    @staticmethod
+    async def set_master_text(user_id: str, raw_text: str) -> None:
+        now = datetime.utcnow()
+        await mongo.incoming_resumes.update_one(
+            {"user_id": user_id},
+            {
+                "$set": {
+                    "master_resume_text": raw_text,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {"created_at": now},
+            },
+            upsert=True,
+        )
+
+    @staticmethod
+    async def get_master_text(user_id: str) -> Optional[str]:
+        doc = await mongo.incoming_resumes.find_one(
+            {"user_id": user_id},
+            {"master_resume_text": 1},
+        )
+        return doc.get("master_resume_text") if doc else None

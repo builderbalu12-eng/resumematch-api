@@ -9,3 +9,4 @@ class IncomingResume(BaseModel):
     extracted_data: Dict              # whatever Claude returns (no fixed schema)
     created_at: datetime
     updated_at: datetime
+    master_resume_text: Optional[str] = None  # raw text explicitly saved by user (free, no AI)

@@ -7,6 +7,10 @@ from app.models.resume.template import TemplateCreate, TemplateOut
 from app.models.resume.user_resume import UserResumeCreate, UserResumeOut
 from app.models.resume.schema import ResumeSchemaCreate, ResumeSchemaOut
 from app.services.incoming_resume_service import IncomingResumeService
+from pydantic import BaseModel as _BaseModel
+
+class SetMasterResumeRequest(_BaseModel):
+    raw_text: str
 
 from app.controllers.resume_ai_controller import (
     process_analyze_resume,
@@ -196,6 +200,29 @@ async def list_my_resumes(
         skip=skip,
         limit=limit
     )
+
+
+@router.post("/resumes/set-master", response_model=dict)
+async def set_master_resume(
+    body: SetMasterResumeRequest,
+    current_user: str = Depends(get_current_user),
+):
+    """Free: save raw resume text as master. No AI, no credits."""
+    if len(body.raw_text.strip()) < 50:
+        raise HTTPException(status_code=422, detail="Resume text is too short")
+    await IncomingResumeService.set_master_text(current_user, body.raw_text.strip())
+    return {"success": True}
+
+
+@router.get("/resumes/master-text", response_model=dict)
+async def get_master_resume_text(
+    current_user: str = Depends(get_current_user),
+):
+    """Retrieve the raw text of the user's saved master resume."""
+    text = await IncomingResumeService.get_master_text(current_user)
+    if text is None:
+        raise HTTPException(status_code=404, detail="No master resume text saved")
+    return {"raw_text": text}
 
 
 @router.get("/resumes/{resume_id}", response_model=dict)
