@@ -131,7 +131,6 @@ def call_claude(
             response = client.messages.create(
                 model=active_model,
                 max_tokens=min(max_tokens, 8192),
-                temperature=min(temperature, 1.0),  # Claude max temp is 1.0
                 messages=[{"role": "user", "content": prompt}],
             )
 
@@ -217,7 +216,6 @@ async def call_ai_text_async(
         response = await client.messages.create(
             model=active_model,
             max_tokens=max_tokens,
-            temperature=min(temperature, 1.0),
             messages=[{"role": "user", "content": prompt}],
         )
         try:
@@ -282,7 +280,6 @@ async def call_ai_chat_async(
         response = await client.messages.create(
             model=active_model,
             max_tokens=min(max_tokens, 8192),
-            temperature=min(temperature, 1.0),
             system=system_instruction,
             messages=messages,
         )
