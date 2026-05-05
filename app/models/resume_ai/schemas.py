@@ -62,7 +62,7 @@ class AnalyzeResumeResponse(BaseModel):
     strengths: List[str]
     weaknesses: List[str]
     suggestions: List[str]
-    creditsUsed: Literal[1] = 1   # ← changed: removed const=True
+    creditsUsed: int = 1
 
 
 class ExtractResumeResponse(BaseModel):
@@ -77,7 +77,7 @@ class ExtractResumeResponse(BaseModel):
     publications: List[str] = Field(default_factory=list)
     hobbies: List[str] = Field(default_factory=list)
     customSections: Dict[str, str] = Field(default_factory=dict)
-    creditsUsed: Literal[2] = 2   # ← changed
+    creditsUsed: int = 2
 
 
 class SectionScore(BaseModel):
@@ -89,6 +89,7 @@ class SectionScore(BaseModel):
 
 
 class TailorResumeResponse(BaseModel):
+    contact: Optional[Dict] = None
     jobTitle: Optional[str] = None
     company: Optional[str] = None
     summary: Optional[str] = None
@@ -100,14 +101,14 @@ class TailorResumeResponse(BaseModel):
     achievements: List[str] = Field(default_factory=list)
     publications: List[str] = Field(default_factory=list)
     hobbies: List[str] = Field(default_factory=list)
-    customSections: Dict[str, str] = Field(default_factory=dict)
-    optimizationNotes: List[str] = Field(default_factory=list)
+    customSections: Dict[str, Any] = Field(default_factory=dict)
+    optimizationNotes: List[Any] = Field(default_factory=list)
     keywordsAdded: List[str] = Field(default_factory=list)
     keywordsPresent: List[str] = Field(default_factory=list)
     sectionScores: List[SectionScore] = Field(default_factory=list)
     estimatedATSScore: int = Field(default=0, ge=0, le=100)
     originalAtsScore: int = Field(default=0, ge=0, le=100)
-    creditsUsed: Literal[2] = 2
+    creditsUsed: int = 2
 
 
 class AtsScoreResponse(BaseModel):
@@ -115,7 +116,7 @@ class AtsScoreResponse(BaseModel):
     scoreBreakdown: Dict[Literal["formatting", "keywords", "structure", "relevance"], int]
     improvements: List[Dict[str, str]]  # issue, suggestion, impact
     topMissingKeywords: List[str]
-    creditsUsed: Literal[1] = 1   # ← changed
+    creditsUsed: int = 1
 
 
 class ParseJobResponse(BaseModel):
@@ -131,12 +132,12 @@ class ParseJobResponse(BaseModel):
     description: Optional[str] = None
     responsibilities: List[str] = Field(default_factory=list)
     benefits: Optional[List[str]] = None
-    creditsUsed: Literal[1] = 1   # ← changed
+    creditsUsed: int = 1
 
 
 class GenerateCoverLetterResponse(BaseModel):
     coverLetter: str = Field(..., min_length=200)
-    creditsUsed: Literal[3] = 3   # ← changed
+    creditsUsed: int = 3
 
 
 class SkillsRoadmapRequest(AIRequestBase):
@@ -165,7 +166,7 @@ class SkillsRoadmapEntry(BaseModel):
 class SkillsRoadmapResponse(BaseModel):
     skillGaps: List[str] = Field(default_factory=list)
     roadmaps: List[SkillsRoadmapEntry] = Field(default_factory=list)
-    creditsUsed: Literal[1] = 1
+    creditsUsed: int = 1
 
 
 class KeywordDistributionRequest(AIRequestBase):
@@ -181,7 +182,7 @@ class KeywordDistributionCategory(BaseModel):
 
 class KeywordDistributionResponse(BaseModel):
     categories: List[KeywordDistributionCategory]
-    creditsUsed: Literal[1] = 1
+    creditsUsed: int = 1
 
 
 class CheckCompletenessResponse(BaseModel):
@@ -192,7 +193,7 @@ class CheckCompletenessResponse(BaseModel):
     ]
     missing: List[str]
     suggestions: List[str]
-    creditsUsed: Literal[1] = 1   # ← changed
+    creditsUsed: int = 1
 
 
 # Optional: wrapper for all responses (if you want consistent shape)
