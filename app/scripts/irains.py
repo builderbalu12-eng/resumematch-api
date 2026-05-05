@@ -1,128 +1,174 @@
-import requests
+#!/usr/bin/env python3
+"""
+IRAINS — All 10 Cumulative APIs → Excel (first 2 rows each, own sheet per API)
+pip install requests openpyxl pandas
+python irains_cumulative_preview.py
+"""
+
+import requests, urllib3
+from datetime import date
 import pandas as pd
-import numpy as np
-from datetime import datetime
-from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from openpyxl.formatting.rule import ColorScaleRule
-import warnings
-warnings.filterwarnings("ignore")
 
-today = datetime.now().strftime("%Y-%m-%d")
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ── FETCH ─────────────────────────────────────────────────────────────────────
-r = requests.post(
-    "https://irainshydro.imd.gov.in:3000/api/v1/up-aws/daily",
-    json={"startDate": today, "endDate": today},
-    timeout=20,
-    verify=False
-)
+BASE_URL   = "https://irainshydro.imd.gov.in:3000"
+TODAY      = str(date.today())
+START_DATE = "2026-04-01"
+END_DATE   = TODAY
+OUTPUT     = f"IRAINS_Cumulative_Preview_{TODAY}.xlsx"
 
-rows = r.json().get("data", [])
-df   = pd.DataFrame(rows)
+ENDPOINTS = [
+    ("UP AWS",          "/api/v1/up-aws/cumulative"),
+    ("NHP AWS",         "/api/v1/nhp-aws/cumulative"),
+    ("Zomato AWS",      "/api/v1/zomato-aws/cumulative"),
+    ("Meghalaya AWS",   "/api/v1/meghalaya-aws/cumulative"),
+    ("Mizoram AWS",     "/api/v1/mizoram-aws/cumulative"),
+    ("Tamilnadu AWS",   "/api/v1/tamilnadu-aws/cumulative"),
+    ("Uttarakhand AWS", "/api/v1/uttarakhand-aws/cumulative"),
+    ("Telangana AWS",   "/api/v1/telangana-aws/cumulative"),
+    ("Karnataka AWS",   "/api/v1/karnataka-aws/cumulative"),
+    ("IITM Mumbai ARG", "/api/v1/iitm-mumbai/cumulative"),
+]
 
-if df.empty:
-    print("No data found")
-    raise SystemExit
+BODY = {"startDate": START_DATE, "endDate": END_DATE}
 
-# Convert dat UTC → IST date string
-if "dat" in df.columns:
-    df["dat"] = pd.to_datetime(df["dat"], utc=True, errors="coerce") \
-                  .dt.tz_convert("Asia/Kolkata") \
-                  .dt.strftime("%Y-%m-%d")
-
-# ── STYLES ────────────────────────────────────────────────────────────────────
-HDR_FILL   = PatternFill("solid", fgColor="1F3864")
+HDR_FILL   = PatternFill("solid", fgColor="1F4E79")
+ALT_FILL   = PatternFill("solid", fgColor="D9E8F5")
+ERR_FILL   = PatternFill("solid", fgColor="FFE0E0")
 HDR_FONT   = Font(bold=True, color="FFFFFF", size=11)
-TITLE_FONT = Font(bold=True, size=14, color="1F3864")
-SUB_FONT   = Font(size=9, color="666666", italic=True)
-BODY_FONT  = Font(size=10)
-CENTER     = Alignment(horizontal="center", vertical="center", wrap_text=True)
-LEFT       = Alignment(horizontal="left", vertical="center", indent=1)
-RIGHT      = Alignment(horizontal="right", vertical="center")
-thin       = Side(style="thin", color="D0D0D0")
-BORDER     = Border(left=thin, right=thin, top=thin, bottom=thin)
-EVEN_FILL  = PatternFill("solid", fgColor="F5F8FF")
-ODD_FILL   = PatternFill("solid", fgColor="FFFFFF")
+TITLE_FONT = Font(bold=True, size=13, color="1F4E79")
+INFO_FONT  = Font(italic=True, color="888888", size=9)
+THIN       = Side(style="thin", color="AAAAAA")
+BORDER     = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
-# ── WORKBOOK ──────────────────────────────────────────────────────────────────
-wb       = Workbook()
-ws       = wb.active
-ws.title = "API Data"
 
-all_cols = df.columns.tolist()
-pretty   = [c.replace("_", " ").title() for c in all_cols]
-end_col  = get_column_letter(len(all_cols) + 1)
+def fetch(path):
+    try:
+        r = requests.post(BASE_URL + path, json=BODY, timeout=20, verify=False)
+        r.raise_for_status()
+        return r.json().get("data", []), None
+    except Exception as e:
+        return [], str(e)
 
-# Title
-ws.merge_cells(f"B2:{end_col}2")
-ws["B2"]            = f"UP AWS — All Station Data  ({today})"
-ws["B2"].font       = TITLE_FONT
-ws["B2"].alignment  = CENTER
-ws.row_dimensions[2].height = 30
 
-ws.merge_cells(f"B3:{end_col}3")
-ws["B3"]           = f"Rows: {len(df)}  |  Columns: {len(all_cols)}  |  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} IST"
-ws["B3"].font      = SUB_FONT
-ws["B3"].alignment = CENTER
-ws.row_dimensions[3].height = 16
+def write_sheet(ws, df, network, path, total_records, error=None):
+    # ── Row 1: Title ──
+    ws.row_dimensions[1].height = 24
+    t = ws.cell(1, 1, f"IRAINS  |  {network}  |  Cumulative Rainfall  |  {START_DATE} → {END_DATE}")
+    t.font = TITLE_FONT
+    t.alignment = Alignment(horizontal="left", vertical="center")
 
-# Headers
-for j, h in enumerate(pretty, start=2):
-    c           = ws.cell(row=5, column=j, value=h)
-    c.font      = HDR_FONT
-    c.fill      = HDR_FILL
-    c.alignment = CENTER
-    c.border    = BORDER
-ws.row_dimensions[5].height = 30
+    # ── Row 2: Meta info ──
+    ws.row_dimensions[2].height = 16
+    meta = f"Endpoint: POST {BASE_URL}{path}   |   Body: {BODY}   |   Total records in API: {total_records}   |   Showing: first 2 rows   |   Generated: {TODAY}"
+    m = ws.cell(2, 1, meta)
+    m.font = INFO_FONT
 
-# Data rows
-for i, row in enumerate(df.itertuples(index=False), start=6):
-    fill = EVEN_FILL if i % 2 == 0 else ODD_FILL
-    for j, col in enumerate(all_cols, start=2):
-        v = getattr(row, col)
-        if isinstance(v, float) and np.isnan(v):
-            v = None
-        c           = ws.cell(row=i, column=j, value=v)
-        c.font      = BODY_FONT
-        c.border    = BORDER
-        c.fill      = fill
-        c.alignment = RIGHT if isinstance(v, (int, float)) else LEFT
-    ws.row_dimensions[i].height = 16
+    # ── Row 3: blank spacer ──
+    ws.row_dimensions[3].height = 6
 
-last_row = len(df) + 5
+    # ── Error state ──
+    if error:
+        e = ws.cell(4, 1, f"⚠  ERROR calling API: {error}")
+        e.fill = ERR_FILL
+        e.font = Font(bold=True, color="CC0000")
+        return
 
-# Auto filter + freeze
-ws.auto_filter.ref = f"B5:{end_col}{last_row}"
-ws.freeze_panes    = "D6"
+    # ── Empty state ──
+    if df.empty:
+        e = ws.cell(4, 1, "⚠  No data returned for this date range. Try a different startDate.")
+        e.font = Font(italic=True, color="AA6600")
+        return
 
-# Color scale on total_rainfall
-if "total_rainfall" in all_cols:
-    rf_col = get_column_letter(all_cols.index("total_rainfall") + 2)
-    ws.conditional_formatting.add(
-        f"{rf_col}6:{rf_col}{last_row}",
-        ColorScaleRule(
-            start_type="min",        start_color="FFFFFF",
-            mid_type="num",          mid_value=5,    mid_color="BDD7EE",
-            end_type="max",          end_color="1F3864"
+    # ── Row 4: Column headers ──
+    ws.row_dimensions[4].height = 20
+    for col_num, col_name in enumerate(df.columns, 1):
+        cell = ws.cell(4, col_num, col_name)
+        cell.fill      = HDR_FILL
+        cell.font      = HDR_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border    = BORDER
+
+    # ── Rows 5–6: First 2 data rows ──
+    for r_idx, (_, row) in enumerate(df.iterrows()):
+        fill = ALT_FILL if r_idx % 2 == 0 else PatternFill()
+        for col_num, value in enumerate(row, 1):
+            cell = ws.cell(5 + r_idx, col_num, value)
+            cell.fill      = fill
+            cell.border    = BORDER
+            cell.alignment = Alignment(horizontal="left", vertical="center")
+            cell.font      = Font(size=10)
+        ws.row_dimensions[5 + r_idx].height = 18
+
+    # ── Auto column width ──
+    for col_cells in ws.columns:
+        col_letter = get_column_letter(col_cells[0].column)
+        max_len = max(
+            (len(str(cell.value or "")) for cell in col_cells),
+            default=10
         )
-    )
+        ws.column_dimensions[col_letter].width = min(max_len + 4, 45)
 
-# Auto column widths
-ws.column_dimensions["A"].width = 3
-for j, col in enumerate(all_cols, start=2):
-    max_len = max(len(pretty[j - 2]), 10)
-    sample  = df[col].fillna("").astype(str).head(200)   # ✅ fix here
-    if not sample.empty:
-        max_len = min(max(max_len, sample.map(len).max()), 35)
-    ws.column_dimensions[get_column_letter(j)].width = max_len + 2
+    # ── Freeze below header ──
+    ws.freeze_panes = "A5"
 
-# Footer
-ws[f"B{last_row + 2}"]      = f"Source: IRAINS UP AWS API  |  Date: {today}"
-ws[f"B{last_row + 2}"].font = SUB_FONT
 
-# ── SAVE ──────────────────────────────────────────────────────────────────────
-out = f"up_aws_{today}.xlsx"
-wb.save(out)
-print(f"✅ Saved: {out}  ({len(df)} records, {len(all_cols)} columns)")
+def main():
+    print(f"\n{'='*60}")
+    print(f"  IRAINS — Cumulative Preview (first 2 rows per API)")
+    print(f"  Range : {START_DATE} → {END_DATE}")
+    print(f"  Output: {OUTPUT}")
+    print(f"{'='*60}\n")
+
+    summary_rows = []
+
+    with pd.ExcelWriter(OUTPUT, engine="openpyxl") as writer:
+
+        for network, path in ENDPOINTS:
+            print(f"  Fetching  {network:20s} ...", end=" ", flush=True)
+            data, err = fetch(path)
+
+            total_records = len(data)
+
+            if err:
+                print(f"✗  ERROR")
+                df_preview = pd.DataFrame()
+            elif not data:
+                print(f"⚠  EMPTY")
+                df_preview = pd.DataFrame()
+            else:
+                df_preview = pd.DataFrame(data[:2])   # ← ONLY FIRST 2 ROWS
+                print(f"✓  {total_records} total  →  showing 2  |  cols: {list(df_preview.columns)}")
+
+            summary_rows.append({
+                "Network":        network,
+                "Endpoint":       f"{BASE_URL}{path}",
+                "Total Records":  total_records,
+                "Columns":        ", ".join(df_preview.columns.tolist()) if not df_preview.empty else "—",
+                "Status":         "ERROR" if err else ("EMPTY" if df_preview.empty else "OK"),
+                "Error":          err or "",
+            })
+
+            sheet_name = network[:31]
+
+            # Write the 2-row preview starting at row 4 (rows 1-3 used by title/meta)
+            if not df_preview.empty:
+                df_preview.to_excel(writer, sheet_name=sheet_name, index=False, startrow=3)
+            else:
+                pd.DataFrame().to_excel(writer, sheet_name=sheet_name, index=False, startrow=3)
+
+            write_sheet(writer.sheets[sheet_name], df_preview, network, path, total_records, error=err)
+
+        # ── SUMMARY sheet ──
+        summary_df = pd.DataFrame(summary_rows)
+        summary_df.to_excel(writer, sheet_name="SUMMARY", index=False, startrow=3)
+        write_sheet(writer.sheets["SUMMARY"], summary_df, "All Networks — Summary", "/summary", len(summary_df))
+
+    print(f"\n✅  Done → {OUTPUT}")
+    print(f"    {len(ENDPOINTS)} sheets + 1 SUMMARY sheet\n")
+
+
+if __name__ == "__main__":
+    main()
