@@ -50,7 +50,7 @@ async def process_analyze_resume(
     try:
         result = analyze_resume_match(request.resume, request.jobDescription)
         await CreditsService.commit_ai_tokens()
-        result["creditsUsed"] = cost
+        result["creditsUsed"] = int(cost)
         return AnalyzeResumeResponse(**result)
     except Exception:
         await CreditsService.refund_credits(current_user, cost, "Analyze resume failed")
@@ -98,7 +98,7 @@ async def process_extract_resume(
         except Exception:
             pass  # non-blocking — profile enrichment failure should not fail extraction
 
-        result["creditsUsed"] = cost
+        result["creditsUsed"] = int(cost)
         return ExtractResumeResponse(**result)
 
     except ValueError as ve:
@@ -124,7 +124,7 @@ async def process_tailor_resume(
         if "error" in result:
             await CreditsService.refund_credits(current_user, cost, "Tailor resume: AI error")
             raise HTTPException(503, "AI service temporarily unavailable. Credits refunded.")
-        result["creditsUsed"] = cost
+        result["creditsUsed"] = int(cost)
         return TailorResumeResponse(**result)
     except HTTPException:
         raise
@@ -149,7 +149,7 @@ async def process_ats_score(
         if "error" in result:
             await CreditsService.refund_credits(current_user, cost, "ATS score: AI error")
             raise HTTPException(503, "AI service temporarily unavailable. Credits refunded.")
-        result["creditsUsed"] = cost
+        result["creditsUsed"] = int(cost)
         return AtsScoreResponse(**result)
     except HTTPException:
         raise
@@ -171,7 +171,7 @@ async def process_parse_job(
     try:
         result = parse_job_description(request.jobDescription)
         await CreditsService.commit_ai_tokens()
-        result["creditsUsed"] = cost
+        result["creditsUsed"] = int(cost)
         return ParseJobResponse(**result)
     except Exception:
         await CreditsService.refund_credits(current_user, cost, "Parse job failed")
@@ -191,7 +191,7 @@ async def process_generate_cover_letter(
     try:
         result = generate_cover_letter(request.resume, request.jobDescription)
         await CreditsService.commit_ai_tokens()
-        result["creditsUsed"] = cost
+        result["creditsUsed"] = int(cost)
         return GenerateCoverLetterResponse(**result)
     except Exception:
         await CreditsService.refund_credits(current_user, cost, "Cover letter generation failed")
@@ -214,7 +214,7 @@ async def process_analyze_and_tailor(
         if "error" in result:
             await CreditsService.refund_credits(current_user, cost, "Analyze and tailor: AI error")
             raise HTTPException(503, "AI service temporarily unavailable. Credits refunded.")
-        result["creditsUsed"] = cost
+        result["creditsUsed"] = int(cost)
         return AnalyzeAndTailorResponse(**result)
     except HTTPException:
         raise
@@ -236,7 +236,7 @@ async def process_check_completeness(
     try:
         result = check_resume_completeness(request.resume)
         await CreditsService.commit_ai_tokens()
-        result["creditsUsed"] = cost
+        result["creditsUsed"] = int(cost)
         return CheckCompletenessResponse(**result)
     except Exception:
         await CreditsService.refund_credits(current_user, cost, "Completeness check failed")
@@ -256,7 +256,7 @@ async def process_generate_skills_roadmap(
     try:
         result = generate_skills_roadmap(request.resume, request.jobDescription)
         await CreditsService.commit_ai_tokens()
-        result["creditsUsed"] = cost
+        result["creditsUsed"] = int(cost)
         return SkillsRoadmapResponse(**result)
     except Exception:
         await CreditsService.refund_credits(current_user, cost, "Skills roadmap generation failed")
