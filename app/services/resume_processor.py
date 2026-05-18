@@ -365,6 +365,27 @@ Job Description (used ONLY for keyword targeting — never copy text from here i
     except Exception:
         pass  # keep model's self-reported score as fallback
 
+    # Always ensure scoreBreakdown is populated so the UI stats bars render.
+    # If the cross-validation call above failed silently, derive a fallback from
+    # sectionScores (which the main tailor prompt always returns).
+    if not result.get("scoreBreakdown"):
+        section_scores = result.get("sectionScores") or []
+        score_map = {
+            s.get("section", "").lower(): s.get("score", 50)
+            for s in section_scores
+        }
+        ats = result.get("estimatedATSScore") or 50
+        avg_all = (
+            int(sum(s.get("score", 50) for s in section_scores) / len(section_scores))
+            if section_scores else ats
+        )
+        result["scoreBreakdown"] = {
+            "formatting": 75,
+            "keywords":   score_map.get("skills", ats),
+            "structure":  score_map.get("experience", ats),
+            "relevance":  avg_all,
+        }
+
     return result
 
 
