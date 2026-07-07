@@ -1,5 +1,9 @@
-from fastapi import FastAPI
+import logging
+import traceback
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.routers import health, auth_routes, user_routes
@@ -54,6 +58,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Unhandled exceptions normally propagate past CORSMiddleware and reach the
+# browser with no Access-Control-Allow-Origin header, which shows up as a
+# misleading "CORS error" instead of the real 500. Catching them here and
+# returning a JSONResponse keeps the request inside CORSMiddleware's send
+# wrapper so the CORS headers still get attached.
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logging.error("Unhandled exception on %s %s:\n%s", request.method, request.url.path, traceback.format_exc())
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 # Routers
 app.include_router(health.router)

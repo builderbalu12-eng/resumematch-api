@@ -82,7 +82,7 @@ class AuthController:
         collection = mongo.users
         user = await collection.find_one({"email": login_data.email})
 
-        if not user or not pwd_context.verify(login_data.password, user.get("password")):
+        if not user or not user.get("password") or not pwd_context.verify(login_data.password, user.get("password")):
             raise HTTPException(status_code=401, detail="Invalid email or password")
 
         user_dict = dict(user)
