@@ -1,11 +1,32 @@
 import hmac as hmac_module
 import hashlib
 import base64
+import re
+from typing import Optional
+
 import httpx
 from fastapi import HTTPException
 from app.config import settings
 
 BACKEND_URL = "https://resumematch-api-production.up.railway.app"
+
+# Used only when no real phone is available (legacy clients that don't send one).
+# Cashfree requires customer_phone on every order.
+FALLBACK_PHONE = "9999999999"
+
+
+def sanitize_phone(raw: Optional[str]) -> Optional[str]:
+    """Normalize to a 10-digit Indian mobile number, or None if not valid."""
+    if not raw:
+        return None
+    digits = re.sub(r"\D", "", str(raw))
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    elif len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    if len(digits) == 10 and digits[0] in "6789" and digits != FALLBACK_PHONE:
+        return digits
+    return None
 
 
 def _base_url() -> str:
@@ -32,6 +53,7 @@ async def create_order(
     customer_id: str,
     customer_email: str,
     tags: dict,
+    customer_phone: Optional[str] = None,
 ) -> dict:
     return_url = f"{settings.frontend_base_url}/payment/success?order_id={{order_id}}"
 
@@ -42,7 +64,7 @@ async def create_order(
         "customer_details": {
             "customer_id": str(customer_id)[:50],
             "customer_email": customer_email,
-            "customer_phone": "9999999999",
+            "customer_phone": sanitize_phone(customer_phone) or FALLBACK_PHONE,
         },
         "order_meta": {
             "return_url": return_url,

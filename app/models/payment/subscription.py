@@ -8,6 +8,7 @@ class SubscriptionCreate(BaseModel):
     billing_cycle: str = Field("monthly", pattern="^(monthly|yearly)$")
     is_recurring: bool = True
     coupon_code: Optional[str] = None          # single field, backend auto-detects type
+    customer_phone: Optional[str] = None       # 10-digit Indian mobile, required by Cashfree
 
 
 class SubscriptionUpdate(BaseModel):

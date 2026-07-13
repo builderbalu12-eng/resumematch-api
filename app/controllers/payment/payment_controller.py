@@ -76,7 +76,17 @@ class PaymentController:
                 "created_at": datetime.utcnow(),
             })
 
-        # 4. Create Cashfree order
+        # 4. Resolve customer phone: request payload → stored user phone.
+        # Persist a newly provided phone so future orders don't need to ask again.
+        phone = cashfree_service.sanitize_phone(data.customer_phone) or \
+            cashfree_service.sanitize_phone(user.get("phone"))
+        if phone and phone != user.get("phone"):
+            await mongo.users.update_one(
+                {"_id": ObjectId(current_user)},
+                {"$set": {"phone": phone, "updated_at": datetime.utcnow()}},
+            )
+
+        # 5. Create Cashfree order
         cf_order_id = f"ord_{current_user[:12]}_{int(datetime.utcnow().timestamp())}"
         cf_order = await cashfree_service.create_order(
             order_id=cf_order_id,
@@ -84,6 +94,7 @@ class PaymentController:
             currency=plan.get("currency", "INR"),
             customer_id=current_user,
             customer_email=user.get("email", "user@example.com"),
+            customer_phone=phone,
             tags={
                 "user_id": current_user,
                 "plan_id": str(plan["_id"]),

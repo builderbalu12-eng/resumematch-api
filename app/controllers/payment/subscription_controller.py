@@ -126,7 +126,16 @@ class SubscriptionController:
                 },
             }
 
-        # 7. Paid plan: create Cashfree order for checkout
+        # 7. Paid plan: create Cashfree order for checkout.
+        # Resolve customer phone: request payload → stored user phone; persist new ones.
+        phone = cashfree_service.sanitize_phone(data.customer_phone) or \
+            cashfree_service.sanitize_phone(user.get("phone"))
+        if phone and phone != user.get("phone"):
+            await mongo.users.update_one(
+                {"_id": ObjectId(current_user)},
+                {"$set": {"phone": phone, "updated_at": datetime.utcnow()}},
+            )
+
         cf_order_id = f"sub_{current_user[:12]}_{int(datetime.utcnow().timestamp())}"
         cf_order = await cashfree_service.create_order(
             order_id=cf_order_id,
@@ -134,6 +143,7 @@ class SubscriptionController:
             currency=plan.get("currency", "INR"),
             customer_id=current_user,
             customer_email=user.get("email", "user@example.com"),
+            customer_phone=phone,
             tags={
                 "user_id": current_user,
                 "plan_id": str(plan["_id"]),
